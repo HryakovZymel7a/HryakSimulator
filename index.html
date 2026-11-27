@@ -4,6 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Хряк Симулятор 3D — Открытый мир</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/png" href="./icon-192.png" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+  <meta name="theme-color" content="#4a2e1b" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Хряк Симулятор" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@700;800;900&family=Russo+One&display=swap" rel="stylesheet" />
@@ -119,7 +127,7 @@
     </div>
 
     <div class="hud-col">
-      <button class="hud-btn" id="btn-breed">
+      <button class="hud-btn" id="btn-breed" style="display:none" hidden aria-hidden="true">
         <svg class="ui-svg" viewBox="0 0 32 32" fill="none">
           <path d="M5 11L3 5L11 8Z" fill="#e8a88c" stroke="#24140d" stroke-width="2.4" stroke-linejoin="round"/>
           <path d="M27 11L29 5L21 8Z" fill="#e8a88c" stroke="#24140d" stroke-width="2.4" stroke-linejoin="round"/>
@@ -189,7 +197,7 @@
     </button>
   </div>
 
-  <div id="pc-help">WASD — бег · Shift — нитро · Пробел — прыжок · ЛКМ/F — боднуть/гудок · E/ПКМ — пятак · R — рэгдолл · T — трактор · C — порода · V — камера</div>
+  <div id="pc-help">WASD — бег · Shift — нитро · Пробел — прыжок · ЛКМ/F — боднуть/гудок · E/ПКМ — пятак · R — рэгдолл · T — трактор · V — камера</div>
 
   <!-- Сенсорное управление -->
   <div id="touch-controls">
@@ -251,5 +259,14 @@
     </div>
   </div>
   <script type="module" src="./game.js"></script>
+  <script>
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js').catch(function (err) {
+          console.warn('Service Worker registration skipped:', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>

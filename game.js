@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { createPigModel, preloadHryakModel, PIG_TYPES, PIG_LABELS } from './pigGenerator.js';
 
 // ============================================================================
@@ -399,12 +400,27 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.06;
+renderer.toneMappingExposure = 1.05;
 if ('SRGBColorSpace' in THREE) renderer.outputColorSpace = THREE.SRGBColorSpace;
 else renderer.outputEncoding = THREE.sRGBEncoding;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0xcfeaff, 0.0028);
+
+// Кинематографичное IBL-освещение через PMREMGenerator + RoomEnvironment
+const ENV_IBL_INTENSITY = 0.35;
+try {
+  const pmremGenerator = new THREE.PMREMGenerator(renderer);
+  pmremGenerator.compileEquirectangularShader();
+  const roomEnv = new RoomEnvironment(renderer);
+  const envRT = pmremGenerator.fromScene(roomEnv, 0.04);
+  scene.environment = envRT.texture;
+  scene.environmentIntensity = ENV_IBL_INTENSITY;
+  roomEnv.dispose();
+  pmremGenerator.dispose();
+} catch (envErr) {
+  console.warn('PMREM RoomEnvironment init skipped:', envErr);
+}
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.15, 360);
 
@@ -449,21 +465,22 @@ const skyMat = new THREE.ShaderMaterial({
 const skyDome = new THREE.Mesh(new THREE.SphereGeometry(320, 24, 16), skyMat);
 scene.add(skyDome);
 
-scene.add(new THREE.HemisphereLight(0xc2e6ff, 0x6ca852, 0.78));
-const sun = new THREE.DirectionalLight(0xfff2d2, 1.32);
+scene.add(new THREE.HemisphereLight(0xcbe8ff, 0x5c8f46, 0.65));
+const sun = new THREE.DirectionalLight(0xfff2d6, 1.38);
 sun.position.copy(sunDir).multiplyScalar(95);
 sun.castShadow = true;
 const shadowRes = isMobile ? 1024 : 2048;
 sun.shadow.mapSize.set(shadowRes, shadowRes);
 sun.shadow.camera.near = 15;
 sun.shadow.camera.far = 220;
-const shD = 68;
+const shD = 70;
 sun.shadow.camera.left = -shD;
 sun.shadow.camera.right = shD;
 sun.shadow.camera.top = shD;
 sun.shadow.camera.bottom = -shD;
-sun.shadow.bias = -0.0004;
-sun.shadow.radius = 2.5;
+sun.shadow.bias = -0.00035;
+sun.shadow.normalBias = 0.03;
+sun.shadow.radius = 3.0;
 scene.add(sun);
 scene.add(sun.target);
 
@@ -490,7 +507,7 @@ world.addContactMaterial(new CANNON.ContactMaterial(matNpc,    matWorld,  { fric
 world.addContactMaterial(new CANNON.ContactMaterial(matTractor, matProp,  { friction: 0.20, restitution: 0.55 }));
 
 function stdMat(color, roughness = 0.78, metalness = 0.04) {
-  return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  return new THREE.MeshStandardMaterial({ color, roughness, metalness, envMapIntensity: ENV_IBL_INTENSITY });
 }
 
 // ----------------------------------------------------------------------------
@@ -710,7 +727,9 @@ function loadModel(filename) {
               obj.receiveShadow = true;
               const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
               for (const m of mats) {
-                if (m && m.map) setSRGBTex(m.map);
+                if (!m) continue;
+                if (m.map) setSRGBTex(m.map);
+                if ('envMapIntensity' in m) m.envMapIntensity = ENV_IBL_INTENSITY;
               }
             }
           });
@@ -817,6 +836,283 @@ function placeKenneyModel({
   });
 }
 
+// ----------------------------------------------------------------------------
+// КЭШИРУЮЩИЙ ЗАГРУЗЧИК РЕАЛИСТИЧНЫХ PBR-МАТЕРИАЛОВ (./textures/*.jpg)
+// ----------------------------------------------------------------------------
+const TEXTURE_DIR = './textures/';
+const pbrTextureLoader = new THREE.TextureLoader();
+const pbrBaseTexCache = new Map();  // url -> Promise<THREE.Texture | null>
+const pbrMaterialCache = new Map(); // cacheKey -> THREE.MeshStandardMaterial
+
+function loadCachedRawTexture(url) {
+  if (!pbrBaseTexCache.has(url)) {
+    const promise = new Promise((resolve) => {
+      pbrTextureLoader.load(
+        url,
+        (tex) => resolve(tex),
+        undefined,
+        (err) => {
+          console.warn(`PBR-текстура не загружена (${url}), оставлен процедурный fallback:`, err);
+          resolve(null);
+        }
+      );
+    });
+    pbrBaseTexCache.set(url, promise);
+  }
+  return pbrBaseTexCache.get(url);
+}
+
+function configurePBRTexture(baseTex, repeatX, repeatY, isColor) {
+  if (!baseTex || !baseTex.image) return null;
+  const tex = new THREE.Texture(baseTex.image);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX, repeatY);
+  tex.anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy() || 1);
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  if (isColor) setSRGBTex(tex);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Загружает и кэширует PBR-материал из ./textures/<prefix>_{Color,NormalGL,Roughness}.jpg
+ * с анизотропией и RepeatWrapping; до загрузки (или при ошибке) работает мягкий процедурный fallback.
+ */
+function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
+  const {
+    fallbackMap = null,
+    fallbackRoughness = 0.88,
+    roughness = 0.95,
+    normalScale = 0.85,
+    color = 0xffffff,
+  } = options;
+
+  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${normalScale}|${color}`;
+  if (pbrMaterialCache.has(key)) return pbrMaterialCache.get(key);
+
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    map: fallbackMap || null,
+    roughness: fallbackRoughness,
+    metalness: 0.0,
+    envMapIntensity: ENV_IBL_INTENSITY,
+  });
+  pbrMaterialCache.set(key, mat);
+
+  const colorUrl = `${TEXTURE_DIR}${prefix}_Color.jpg`;
+  const normalUrl = `${TEXTURE_DIR}${prefix}_NormalGL.jpg`;
+  const roughUrl = `${TEXTURE_DIR}${prefix}_Roughness.jpg`;
+
+  Promise.all([
+    loadCachedRawTexture(colorUrl),
+    loadCachedRawTexture(normalUrl),
+    loadCachedRawTexture(roughUrl),
+  ]).then(([rawColor, rawNormal, rawRough]) => {
+    let changed = false;
+    if (rawColor) {
+      const cTex = configurePBRTexture(rawColor, repeatX, repeatY, true);
+      if (cTex) { mat.map = cTex; changed = true; }
+    }
+    if (rawNormal) {
+      const nTex = configurePBRTexture(rawNormal, repeatX, repeatY, false);
+      if (nTex) {
+        mat.normalMap = nTex;
+        mat.normalScale = new THREE.Vector2(normalScale, normalScale);
+        changed = true;
+      }
+    }
+    if (rawRough) {
+      const rTex = configurePBRTexture(rawRough, repeatX, repeatY, false);
+      if (rTex) {
+        mat.roughnessMap = rTex;
+        mat.roughness = roughness;
+        changed = true;
+      }
+    }
+    if (changed) mat.needsUpdate = true;
+  });
+
+  return mat;
+}
+
+// ----------------------------------------------------------------------------
+// ЗАГРУЗЧИК 3D-РАСТЕНИЙ (.gltf) И ПРЕОБРАЗОВАНИЕ В INSTANCEDMESH
+// ----------------------------------------------------------------------------
+const gltfPlantCache = new Map(); // filename -> Promise<Array<Array<{ geometry, material }>> | null>
+
+function prepareFoliageMaterial(srcMat) {
+  if (!srcMat) return new THREE.MeshStandardMaterial({ color: 0x5da844, roughness: 0.85, side: THREE.DoubleSide });
+  const mat = srcMat.clone();
+  if (mat.map) {
+    setSRGBTex(mat.map);
+    mat.map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy() || 1);
+  }
+  mat.alphaTest = 0.35;
+  mat.side = THREE.DoubleSide;
+  mat.transparent = false;
+  mat.depthWrite = true;
+  if ('metalness' in mat && mat.metalness > 0.2) mat.metalness = 0.05;
+  if ('envMapIntensity' in mat) mat.envMapIntensity = 0.28;
+  mat.needsUpdate = true;
+  return mat;
+}
+
+function bakeNodeToNormalizedParts(node, scaleMode = 'height') {
+  node.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(node);
+  if (box.isEmpty()) return [];
+
+  const size = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+
+  const denom = scaleMode === 'maxHoriz'
+    ? Math.max(0.001, size.x, size.z)
+    : Math.max(0.001, size.y);
+  const normScale = 1.0 / denom;
+
+  // Переносим центр по X/Z в 0, низ ставим на y = 0 и приводим к единичному масштабу (1м)
+  const normMat = new THREE.Matrix4()
+    .makeScale(normScale, normScale, normScale)
+    .multiply(new THREE.Matrix4().makeTranslation(-center.x, -box.min.y, -center.z));
+
+  const parts = [];
+  node.traverse((child) => {
+    if (!child.isMesh || !child.geometry) return;
+    const geo = child.geometry.clone();
+    const baked = new THREE.Matrix4().multiplyMatrices(normMat, child.matrixWorld);
+    geo.applyMatrix4(baked);
+    geo.computeBoundingSphere();
+
+    const mat = Array.isArray(child.material)
+      ? child.material.map(prepareFoliageMaterial)
+      : prepareFoliageMaterial(child.material);
+
+    parts.push({ geometry: geo, material: mat });
+  });
+  return parts;
+}
+
+/**
+ * Загружает .gltf растение 1 раз и автоматически разделяет его на варианты,
+ * если в файле несколько отдельных кустов/пучков, либо сохраняет как единое составное растение.
+ */
+function loadPlantVariants(filename, scaleMode = 'height') {
+  const cacheKey = `${filename}|${scaleMode}`;
+  if (!gltfPlantCache.has(cacheKey)) {
+    const promise = new Promise((resolve) => {
+      envGltfLoader.load(
+        `${MODEL_DIR}${filename}`,
+        (gltf) => {
+          const root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
+          if (!root) {
+            resolve(null);
+            return;
+          }
+          root.updateMatrixWorld(true);
+
+          // Находим уровень узлов, содержащий возможные варианты (как в наборах Poly Haven)
+          let container = root;
+          while (container.children.length === 1 && !container.children[0].isMesh && container.children[0].children.length > 0) {
+            container = container.children[0];
+          }
+
+          const candidates = container.children.filter((ch) => {
+            let hasMesh = false;
+            ch.traverse((o) => { if (o.isMesh) hasMesh = true; });
+            return hasMesh;
+          });
+
+          // Проверяем, разнесены ли дочерние объекты по плоскости XZ (набор вариантов) или это части одного растения
+          let treatAsVariants = false;
+          if (candidates.length > 1) {
+            const boxes = candidates.map((ch) => new THREE.Box3().setFromObject(ch));
+            let separatedPairs = 0;
+            let totalPairs = 0;
+            for (let i = 0; i < boxes.length; i++) {
+              const ci = new THREE.Vector3(), si = new THREE.Vector3();
+              boxes[i].getCenter(ci); boxes[i].getSize(si);
+              for (let j = i + 1; j < boxes.length; j++) {
+                const cj = new THREE.Vector3(), sj = new THREE.Vector3();
+                boxes[j].getCenter(cj); boxes[j].getSize(sj);
+                const distXZ = Math.hypot(ci.x - cj.x, ci.z - cj.z);
+                const avgSpan = (Math.max(si.x, si.z) + Math.max(sj.x, sj.z)) * 0.35;
+                totalPairs++;
+                if (distXZ > Math.max(0.18, avgSpan)) separatedPairs++;
+              }
+            }
+            treatAsVariants = totalPairs > 0 && (separatedPairs / totalPairs) >= 0.5;
+          }
+
+          const variants = [];
+          if (treatAsVariants) {
+            for (const ch of candidates) {
+              const parts = bakeNodeToNormalizedParts(ch, scaleMode);
+              if (parts.length > 0) variants.push(parts);
+            }
+          } else {
+            const parts = bakeNodeToNormalizedParts(root, scaleMode);
+            if (parts.length > 0) variants.push(parts);
+          }
+
+          resolve(variants.length > 0 ? variants : null);
+        },
+        undefined,
+        (err) => {
+          console.warn(`3D-растение ${MODEL_DIR}${filename} не загружено, используется процедурный fallback:`, err);
+          checkLocalGlbProtocolHint();
+          resolve(null);
+        }
+      );
+    });
+    gltfPlantCache.set(cacheKey, promise);
+  }
+  return gltfPlantCache.get(cacheKey);
+}
+
+/**
+ * Расставляет массив трансформов [{ x, y, z, rotY, tiltX, tiltZ, sx, sy, sz }]
+ * по всем вариантам загруженного .gltf через THREE.InstancedMesh.
+ */
+function buildInstancedPlantGroup(variants, transforms, { castShadow = false, receiveShadow = true } = {}) {
+  const group = new THREE.Group();
+  const buckets = variants.map(() => []);
+  transforms.forEach((tr, idx) => {
+    buckets[idx % variants.length].push(tr);
+  });
+
+  const dummy = new THREE.Object3D();
+  variants.forEach((parts, vIdx) => {
+    const list = buckets[vIdx];
+    if (list.length === 0) return;
+
+    for (const part of parts) {
+      const inst = new THREE.InstancedMesh(part.geometry, part.material, list.length);
+      inst.castShadow = castShadow;
+      inst.receiveShadow = receiveShadow;
+      inst.frustumCulled = false;
+
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i];
+        dummy.position.set(t.x, t.y || 0, t.z);
+        dummy.rotation.set(t.tiltX || 0, t.rotY || 0, t.tiltZ || 0);
+        dummy.scale.set(t.sx, t.sy, t.sz);
+        dummy.updateMatrix();
+        inst.setMatrixAt(i, dummy.matrix);
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      group.add(inst);
+    }
+  });
+
+  scene.add(group);
+  return group;
+}
+
 function buildWorld() {
   // Основная земля
   const groundBody = new CANNON.Body({ mass: 0, material: matWorld });
@@ -824,9 +1120,15 @@ function buildWorld() {
   groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
   world.addBody(groundBody);
 
+  const grassMat = loadPBRMaterial('Grass004_1K-JPG', 75, 75, {
+    fallbackMap: texGrass,
+    fallbackRoughness: 0.92,
+    roughness: 0.95,
+    normalScale: 0.85,
+  });
   const grass = new THREE.Mesh(
     new THREE.PlaneGeometry(WORLD_SIZE + 180, WORLD_SIZE + 180),
-    new THREE.MeshStandardMaterial({ map: texGrass, roughness: 0.92 })
+    grassMat
   );
   grass.rotation.x = -Math.PI / 2;
   grass.receiveShadow = true;
@@ -926,14 +1228,19 @@ function buildWorld() {
   if (rimCrownInst.instanceColor) rimCrownInst.instanceColor.needsUpdate = true;
   scene.add(rimTrunkInst, rimCrownInst);
 
-  // Сеть магистральных дорог (Центр <-> Север, Восток, Юг, Запад + кольцевая вокруг биомов)
-  const roadMat = new THREE.MeshStandardMaterial({ map: texRoad, roughness: 0.85 });
+  // Сеть магистральных дорог с PBR-материалом Road012B_1K-JPG (разметка строго вдоль полотна)
+  const roadMat = loadPBRMaterial('Road012B_1K-JPG', 1, 42, {
+    fallbackMap: texRoad,
+    fallbackRoughness: 0.85,
+    roughness: 0.92,
+    normalScale: 0.90,
+  });
   const rNS = new THREE.Mesh(new THREE.PlaneGeometry(9.2, 390), roadMat);
-  rNS.rotation.x = -Math.PI / 2; rNS.position.y = 0.015; rNS.receiveShadow = true;
+  rNS.rotation.x = -Math.PI / 2; rNS.position.y = 0.022; rNS.receiveShadow = true;
   scene.add(rNS);
 
   const rEW = new THREE.Mesh(new THREE.PlaneGeometry(9.2, 390), roadMat);
-  rEW.rotation.x = -Math.PI / 2; rEW.rotation.z = Math.PI / 2; rEW.position.y = 0.014; rEW.receiveShadow = true;
+  rEW.rotation.x = -Math.PI / 2; rEW.rotation.z = Math.PI / 2; rEW.position.y = 0.018; rEW.receiveShadow = true;
   scene.add(rEW);
 
   // Облака над всей долиной 500x500
@@ -1158,11 +1465,17 @@ function buildWorld() {
   // БИОМ 1: ЦЕНТР (0, 0) — ДЕРЕВЕНСКАЯ ПЛОЩАДЬ
   // ==========================================================================
   noTreeZones.push({ x: 0, z: 0, r: 34 });
+  const plazaMat = loadPBRMaterial('Concrete049_1K-JPG', 6, 6, {
+    fallbackMap: texPlaza,
+    fallbackRoughness: 0.88,
+    roughness: 0.90,
+    normalScale: 0.75,
+  });
   const plaza = new THREE.Mesh(
     new THREE.CylinderGeometry(20, 20.4, 0.08, 32),
-    new THREE.MeshStandardMaterial({ map: texPlaza, roughness: 0.88 })
+    plazaMat
   );
-  plaza.position.y = 0.02; plaza.receiveShadow = true;
+  plaza.position.y = 0.035; plaza.receiveShadow = true;
   scene.add(plaza);
 
   createGlbHouse('building-a.glb',  26, -24, -0.35, 11.5, wallPlasterWarm,  roofRed,    10.0, 5.2, 8.2);
@@ -1392,9 +1705,15 @@ function buildWorld() {
   // БИОМ 3: ВОСТОК (140, 0) — СТРОЙКА (Леса, бетон, мега-трамплин!)
   // ==========================================================================
   noTreeZones.push({ x: 140, z: 0, r: 46 });
+  const siteConcreteMat = loadPBRMaterial('Concrete049_1K-JPG', 10, 10, {
+    fallbackMap: texConcrete,
+    fallbackRoughness: 0.90,
+    roughness: 0.92,
+    normalScale: 0.80,
+  });
   const siteGround = new THREE.Mesh(
     new THREE.BoxGeometry(66, 0.08, 66),
-    new THREE.MeshStandardMaterial({ map: texConcrete, roughness: 0.9 })
+    siteConcreteMat
   );
   siteGround.position.set(140, 0.02, 0); siteGround.receiveShadow = true;
   scene.add(siteGround);
@@ -1562,9 +1881,15 @@ function buildWorld() {
   // БИОМ 5: ЗАПАД (-140, 0) — ХОЛМИСТЫЙ ЛЕС И СВИНСКИЙ СКЕЙТ-ПАРК
   // ==========================================================================
   noTreeZones.push({ x: -140, z: 0, r: 44 });
+  const skateConcreteMat = loadPBRMaterial('Concrete049_1K-JPG', 9, 8, {
+    fallbackMap: texConcrete,
+    fallbackRoughness: 0.78,
+    roughness: 0.86,
+    normalScale: 0.75,
+  });
   const skatePad = new THREE.Mesh(
     new THREE.BoxGeometry(62, 0.08, 56),
-    new THREE.MeshStandardMaterial({ map: texConcrete, roughness: 0.75 })
+    skateConcreteMat
   );
   skatePad.position.set(-140, 0.02, 0); skatePad.receiveShadow = true;
   scene.add(skatePad);
@@ -1642,95 +1967,17 @@ function buildWorld() {
   const dummy = new THREE.Object3D();
   const tempColor = new THREE.Color();
 
-  // 1) ДЕРЕВЬЯ (180 шт. по всей долине и густой лес на Западе — 2 InstancedMesh!)
-  const TREE_TOTAL = isMobile ? 150 : 210;
-  const trunkGeo = new THREE.CylinderGeometry(0.32, 0.54, 3.6, 7);
-  trunkGeo.translate(0, 1.8, 0);
-  const crownGeo = new THREE.IcosahedronGeometry(2.1, 1);
-  crownGeo.translate(0, 4.5, 0);
-
-  const trunkInst = new THREE.InstancedMesh(trunkGeo, stdMat(0x784c2c, 0.9), TREE_TOTAL);
-  const crownInst = new THREE.InstancedMesh(crownGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 }), TREE_TOTAL);
-  trunkInst.castShadow = true; trunkInst.receiveShadow = true;
-  crownInst.castShadow = true; crownInst.receiveShadow = true;
-
-  let placed = 0, tries = 0;
-  while (placed < TREE_TOTAL && tries < TREE_TOTAL * 10) {
-    tries++;
-    // Первые 45 деревьев концентрируем в Западном холмистом лесу (-195..-85, -110..110)
-    let x, z;
-    if (placed < 45) {
-      x = -85 - Math.random() * 125;
-      z = (Math.random() - 0.5) * 240;
-    } else {
-      x = (Math.random() - 0.5) * (WORLD_SIZE - 24);
-      z = (Math.random() - 0.5) * (WORLD_SIZE - 24);
-    }
-    if (!isClearGround(x, z)) continue;
-    // Не ставим деревья вплотную друг к другу
-    let tooClose = false;
-    for (let k = Math.max(0, treePositions.length - 40); k < treePositions.length; k++) {
-      if (Math.hypot(x - treePositions[k].x, z - treePositions[k].z) < 4.5) { tooClose = true; break; }
-    }
-    if (tooClose) continue;
-
-    const s = 0.85 + Math.random() * 0.55;
-    dummy.position.set(x, 0, z);
-    dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-    dummy.scale.set(s, s * (0.9 + Math.random() * 0.35), s);
-    dummy.updateMatrix();
-    trunkInst.setMatrixAt(placed, dummy.matrix);
-
-    dummy.scale.set(s * 1.15, s * 0.95, s * 1.15);
-    dummy.updateMatrix();
-    crownInst.setMatrixAt(placed, dummy.matrix);
-    tempColor.setHSL(0.28 + (Math.random() - 0.5) * 0.05, 0.56, 0.38 + Math.random() * 0.14);
-    crownInst.setColorAt(placed, tempColor);
-
-    treePositions.push({ x, z });
-    placed++;
-  }
-  trunkInst.count = placed;
-  crownInst.count = placed;
-  trunkInst.instanceMatrix.needsUpdate = true;
-  crownInst.instanceMatrix.needsUpdate = true;
-  if (crownInst.instanceColor) crownInst.instanceColor.needsUpdate = true;
-  scene.add(trunkInst, crownInst);
-
-  // 2) КУСТЫ (140 шт. через InstancedMesh)
-  const BUSH_COUNT = isMobile ? 110 : 160;
-  const bushGeo = new THREE.IcosahedronGeometry(0.75, 1);
-  const bushInst = new THREE.InstancedMesh(bushGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 }), BUSH_COUNT);
-  bushInst.castShadow = true; bushInst.receiveShadow = true;
-
-  placed = 0; tries = 0;
-  while (placed < BUSH_COUNT && tries < BUSH_COUNT * 8) {
-    tries++;
-    const x = (Math.random() - 0.5) * (WORLD_SIZE - 20);
-    const z = (Math.random() - 0.5) * (WORLD_SIZE - 20);
-    if (!isClearGround(x, z)) continue;
-    const s = 0.75 + Math.random() * 0.85;
-    dummy.position.set(x, s * 0.45, z);
-    dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-    dummy.scale.set(s * 1.2, s * 0.85, s * 1.1);
-    dummy.updateMatrix();
-    bushInst.setMatrixAt(placed, dummy.matrix);
-    tempColor.setHSL(0.29 + (Math.random() - 0.5) * 0.04, 0.55, 0.36 + Math.random() * 0.12);
-    bushInst.setColorAt(placed, tempColor);
-    placed++;
-  }
-  bushInst.count = placed;
-  bushInst.instanceMatrix.needsUpdate = true;
-  if (bushInst.instanceColor) bushInst.instanceColor.needsUpdate = true;
-  scene.add(bushInst);
-
-  // 3) КАМНИ (180 шт. через InstancedMesh)
+  // 1) КАМНИ (180 шт. через InstancedMesh — остаются всегда как природный декор)
   const ROCK_COUNT = isMobile ? 140 : 210;
   const rockGeo = new THREE.DodecahedronGeometry(0.35, 0);
-  const rockInst = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }), ROCK_COUNT);
-  rockInst.castShadow = true; rockInst.receiveShadow = true;
+  const rockInst = new THREE.InstancedMesh(
+    rockGeo,
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, envMapIntensity: ENV_IBL_INTENSITY }),
+    ROCK_COUNT
+  );
+  rockInst.castShadow = !isMobile; rockInst.receiveShadow = true;
 
-  placed = 0; tries = 0;
+  let placed = 0, tries = 0;
   while (placed < ROCK_COUNT && tries < ROCK_COUNT * 8) {
     tries++;
     const x = (Math.random() - 0.5) * (WORLD_SIZE - 16);
@@ -1752,57 +1999,292 @@ function buildWorld() {
   if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
   scene.add(rockInst);
 
-  // 4) ПУЧКИ ТРАВЫ И РОМАШКИ (1200 + 350 инстансов)
-  const grassBladeGeo = new THREE.ConeGeometry(0.16, 0.55, 4);
-  grassBladeGeo.translate(0, 0.25, 0);
-  const GRASS_COUNT = isMobile ? 800 : 1250;
-  const grassInst = new THREE.InstancedMesh(grassBladeGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 }), GRASS_COUNT);
+  // 2) МЯГКИЙ FALLBACK: процедурные деревья-шарики, кусты, плоская трава и ромашки
+  //    Создаются только если соответствующий .gltf не смог загрузиться!
+  function spawnFallbackTreesAndBushes() {
+    const TREE_TOTAL = isMobile ? 120 : 170;
+    const trunkGeo = new THREE.CylinderGeometry(0.32, 0.54, 3.6, 7);
+    trunkGeo.translate(0, 1.8, 0);
+    const crownGeo = new THREE.IcosahedronGeometry(2.1, 1);
+    crownGeo.translate(0, 4.5, 0);
 
-  placed = 0; tries = 0;
-  while (placed < GRASS_COUNT && tries < GRASS_COUNT * 6) {
-    tries++;
-    const x = (Math.random() - 0.5) * (WORLD_SIZE - 14);
-    const z = (Math.random() - 0.5) * (WORLD_SIZE - 14);
-    if (!isClearGround(x, z)) continue;
-    dummy.position.set(x, 0, z);
-    dummy.rotation.set((Math.random() - 0.5) * 0.25, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.25);
-    const s = 0.7 + Math.random() * 0.9;
-    dummy.scale.set(s * 1.2, s * (0.8 + Math.random() * 0.6), s * 1.2);
-    dummy.updateMatrix();
-    grassInst.setMatrixAt(placed, dummy.matrix);
-    tempColor.setHSL(0.27 + (Math.random() - 0.5) * 0.04, 0.58, 0.44 + Math.random() * 0.14);
-    grassInst.setColorAt(placed, tempColor);
-    placed++;
-  }
-  grassInst.count = placed;
-  grassInst.instanceMatrix.needsUpdate = true;
-  if (grassInst.instanceColor) grassInst.instanceColor.needsUpdate = true;
-  scene.add(grassInst);
+    const trunkInst = new THREE.InstancedMesh(trunkGeo, stdMat(0x784c2c, 0.9), TREE_TOTAL);
+    const crownInst = new THREE.InstancedMesh(crownGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82, envMapIntensity: ENV_IBL_INTENSITY }), TREE_TOTAL);
+    trunkInst.castShadow = true; trunkInst.receiveShadow = true;
+    crownInst.castShadow = true; crownInst.receiveShadow = true;
 
-  const DAISY_COUNT = isMobile ? 240 : 380;
-  const daisyPetals = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.18, 0.08, 0.04, 7), stdMat(0xffffff, 0.7), DAISY_COUNT);
-  const daisyCenters = new THREE.InstancedMesh(new THREE.SphereGeometry(0.075, 6, 5), stdMat(0xffd426, 0.5), DAISY_COUNT);
-  placed = 0; tries = 0;
-  while (placed < DAISY_COUNT && tries < DAISY_COUNT * 6) {
-    tries++;
-    const x = (Math.random() - 0.5) * (WORLD_SIZE - 14);
-    const z = (Math.random() - 0.5) * (WORLD_SIZE - 14);
-    if (!isClearGround(x, z)) continue;
-    const h = 0.14 + Math.random() * 0.14;
-    const s = 0.75 + Math.random() * 0.65;
-    dummy.position.set(x, h, z);
-    dummy.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
-    dummy.scale.setScalar(s);
-    dummy.updateMatrix();
-    daisyPetals.setMatrixAt(placed, dummy.matrix);
-    dummy.position.set(x, h + 0.025, z);
-    dummy.updateMatrix();
-    daisyCenters.setMatrixAt(placed, dummy.matrix);
-    placed++;
+    let cnt = 0, tr = 0;
+    treePositions.length = 0;
+    while (cnt < TREE_TOTAL && tr < TREE_TOTAL * 10) {
+      tr++;
+      const x = cnt < 40 ? (-85 - Math.random() * 125) : (Math.random() - 0.5) * (WORLD_SIZE - 24);
+      const z = cnt < 40 ? ((Math.random() - 0.5) * 240) : (Math.random() - 0.5) * (WORLD_SIZE - 24);
+      if (!isClearGround(x, z)) continue;
+      const s = 0.85 + Math.random() * 0.55;
+      dummy.position.set(x, 0, z);
+      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      dummy.scale.set(s, s * (0.9 + Math.random() * 0.35), s);
+      dummy.updateMatrix();
+      trunkInst.setMatrixAt(cnt, dummy.matrix);
+      dummy.scale.set(s * 1.15, s * 0.95, s * 1.15);
+      dummy.updateMatrix();
+      crownInst.setMatrixAt(cnt, dummy.matrix);
+      tempColor.setHSL(0.28 + (Math.random() - 0.5) * 0.05, 0.56, 0.38 + Math.random() * 0.14);
+      crownInst.setColorAt(cnt, tempColor);
+      treePositions.push({ x, z });
+      cnt++;
+    }
+    trunkInst.count = cnt; crownInst.count = cnt;
+    trunkInst.instanceMatrix.needsUpdate = true; crownInst.instanceMatrix.needsUpdate = true;
+    if (crownInst.instanceColor) crownInst.instanceColor.needsUpdate = true;
+    scene.add(trunkInst, crownInst);
+    updateTreeColliderPool();
   }
-  daisyPetals.count = placed; daisyCenters.count = placed;
-  daisyPetals.instanceMatrix.needsUpdate = true; daisyCenters.instanceMatrix.needsUpdate = true;
-  scene.add(daisyPetals, daisyCenters);
+
+  function spawnFallbackGrass() {
+    const grassBladeGeo = new THREE.ConeGeometry(0.16, 0.55, 4);
+    grassBladeGeo.translate(0, 0.25, 0);
+    const GRASS_COUNT = isMobile ? 500 : 800;
+    const grassInst = new THREE.InstancedMesh(grassBladeGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 }), GRASS_COUNT);
+    let cnt = 0, tr = 0;
+    while (cnt < GRASS_COUNT && tr < GRASS_COUNT * 6) {
+      tr++;
+      const x = (Math.random() - 0.5) * (WORLD_SIZE - 14);
+      const z = (Math.random() - 0.5) * (WORLD_SIZE - 14);
+      if (!isClearGround(x, z)) continue;
+      dummy.position.set(x, 0, z);
+      dummy.rotation.set((Math.random() - 0.5) * 0.25, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.25);
+      const s = 0.7 + Math.random() * 0.9;
+      dummy.scale.set(s * 1.2, s * (0.8 + Math.random() * 0.6), s * 1.2);
+      dummy.updateMatrix();
+      grassInst.setMatrixAt(cnt, dummy.matrix);
+      tempColor.setHSL(0.27 + (Math.random() - 0.5) * 0.04, 0.58, 0.44 + Math.random() * 0.14);
+      grassInst.setColorAt(cnt, tempColor);
+      cnt++;
+    }
+    grassInst.count = cnt;
+    grassInst.instanceMatrix.needsUpdate = true;
+    if (grassInst.instanceColor) grassInst.instanceColor.needsUpdate = true;
+    scene.add(grassInst);
+  }
+
+  function spawnFallbackFlowers() {
+    const DAISY_COUNT = isMobile ? 160 : 240;
+    const daisyPetals = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.18, 0.08, 0.04, 7), stdMat(0xffffff, 0.7), DAISY_COUNT);
+    const daisyCenters = new THREE.InstancedMesh(new THREE.SphereGeometry(0.075, 6, 5), stdMat(0xffd426, 0.5), DAISY_COUNT);
+    let cnt = 0, tr = 0;
+    while (cnt < DAISY_COUNT && tr < DAISY_COUNT * 6) {
+      tr++;
+      const x = (Math.random() - 0.5) * (WORLD_SIZE - 14);
+      const z = (Math.random() - 0.5) * (WORLD_SIZE - 14);
+      if (!isClearGround(x, z)) continue;
+      const h = 0.14 + Math.random() * 0.14;
+      const s = 0.75 + Math.random() * 0.65;
+      dummy.position.set(x, h, z);
+      dummy.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
+      dummy.scale.setScalar(s);
+      dummy.updateMatrix();
+      daisyPetals.setMatrixAt(cnt, dummy.matrix);
+      dummy.position.set(x, h + 0.025, z);
+      dummy.updateMatrix();
+      daisyCenters.setMatrixAt(cnt, dummy.matrix);
+      cnt++;
+    }
+    daisyPetals.count = cnt; daisyCenters.count = cnt;
+    daisyPetals.instanceMatrix.needsUpdate = true; daisyCenters.instanceMatrix.needsUpdate = true;
+    scene.add(daisyPetals, daisyCenters);
+  }
+
+  // 3) РЕАЛИСТИЧНЫЕ 3D-РАСТЕНИЯ (.gltf) ЧЕРЕЗ THREE.InstancedMesh (60 FPS НА ТЕЛЕФОНЕ!)
+  function sampleMeadowPoint(preferNearBiomes = false) {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      let x, z;
+      if (preferNearBiomes && Math.random() < 0.55) {
+        // Концентрируем часть травы и цветов вокруг основных живых зон долины
+        const hubs = [
+          [0, 0, 72],
+          [0, -140, 68],
+          [0, 146, 76],
+          [-140, 0, 76],
+          [140, 0, 64],
+        ];
+        const h = hubs[Math.floor(Math.random() * hubs.length)];
+        const ang = Math.random() * Math.PI * 2;
+        const rad = 24 + Math.random() * h[2];
+        x = h[0] + Math.cos(ang) * rad;
+        z = h[1] + Math.sin(ang) * rad;
+      } else {
+        x = (Math.random() - 0.5) * (WORLD_SIZE - 20);
+        z = (Math.random() - 0.5) * (WORLD_SIZE - 20);
+      }
+      if (Math.abs(x) > HALF_WORLD - 10 || Math.abs(z) > HALF_WORLD - 10) continue;
+      if (isClearGround(x, z)) return { x, z };
+    }
+    return null;
+  }
+
+  // 3a) ~350 пучков 3D-травы (grass_medium_01_1k.gltf)
+  loadPlantVariants('grass_medium_01_1k.gltf', 'height').then((variants) => {
+    if (!variants) {
+      spawnFallbackGrass();
+      return;
+    }
+    const transforms = [];
+    const targetCount = 350;
+    for (let i = 0; i < targetCount; i++) {
+      const pt = sampleMeadowPoint(true);
+      if (!pt) continue;
+      const h = 0.45 + Math.random() * 0.42;
+      const w = h * (0.85 + Math.random() * 0.35);
+      transforms.push({
+        x: pt.x,
+        y: 0,
+        z: pt.z,
+        rotY: Math.random() * Math.PI * 2,
+        tiltX: (Math.random() - 0.5) * 0.12,
+        tiltZ: (Math.random() - 0.5) * 0.12,
+        sx: w,
+        sy: h,
+        sz: w,
+      });
+    }
+    buildInstancedPlantGroup(variants, transforms, { castShadow: false, receiveShadow: true });
+  });
+
+  // 3b) ~180 полевых цветов (flower_empodium_1k.gltf)
+  loadPlantVariants('flower_empodium_1k.gltf', 'height').then((variants) => {
+    if (!variants) {
+      spawnFallbackFlowers();
+      return;
+    }
+    const transforms = [];
+    const targetCount = 180;
+    for (let i = 0; i < targetCount; i++) {
+      const pt = sampleMeadowPoint(true);
+      if (!pt) continue;
+      const h = 0.38 + Math.random() * 0.32;
+      const w = h * (0.9 + Math.random() * 0.25);
+      transforms.push({
+        x: pt.x,
+        y: 0,
+        z: pt.z,
+        rotY: Math.random() * Math.PI * 2,
+        tiltX: (Math.random() - 0.5) * 0.10,
+        tiltZ: (Math.random() - 0.5) * 0.10,
+        sx: w,
+        sy: h,
+        sz: w,
+      });
+    }
+    buildInstancedPlantGroup(variants, transforms, { castShadow: false, receiveShadow: true });
+  });
+
+  // 3c) ~70 пышных кустов (~1.5м) и невысоких деревьев (3.5–4.5м) из searsia_lucida_1k.gltf
+  loadPlantVariants('searsia_lucida_1k.gltf', 'height').then((variants) => {
+    if (!variants) {
+      spawnFallbackTreesAndBushes();
+      return;
+    }
+    const transforms = [];
+    const totalCount = 70;
+    treePositions.length = 0;
+
+    for (let i = 0; i < totalCount; i++) {
+      const isLargeTree = i >= 32; // ~32 куста (~1.5м) + ~38 деревьев (3.5–4.5м)
+      let pt = null;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        let x, z;
+        if (isLargeTree && i < 52) {
+          // Часть крупных деревьев формирует густой Западный лес
+          x = -82 - Math.random() * 130;
+          z = (Math.random() - 0.5) * 230;
+        } else {
+          const cand = sampleMeadowPoint(i < 24);
+          if (!cand) continue;
+          x = cand.x; z = cand.z;
+        }
+        if (!isClearGround(x, z)) continue;
+        let tooClose = false;
+        const minSpacing = isLargeTree ? 6.2 : 3.2;
+        for (let k = 0; k < transforms.length; k++) {
+          if (Math.hypot(x - transforms[k].x, z - transforms[k].z) < minSpacing) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (tooClose) continue;
+        pt = { x, z };
+        break;
+      }
+      if (!pt) continue;
+
+      const h = isLargeTree
+        ? (3.5 + Math.random() * 1.0)  // Невысокие деревья 3.5–4.5 м
+        : (1.4 + Math.random() * 0.55); // Пышные кусты ~1.5–1.95 м
+      const w = h * (0.92 + Math.random() * 0.22);
+
+      transforms.push({
+        x: pt.x,
+        y: 0,
+        z: pt.z,
+        rotY: Math.random() * Math.PI * 2,
+        tiltX: (Math.random() - 0.5) * 0.06,
+        tiltZ: (Math.random() - 0.5) * 0.06,
+        sx: w,
+        sy: h,
+        sz: w,
+      });
+
+      if (isLargeTree) {
+        treePositions.push({ x: pt.x, z: pt.z });
+      }
+    }
+
+    buildInstancedPlantGroup(variants, transforms, { castShadow: true, receiveShadow: true });
+    updateTreeColliderPool();
+  });
+
+  // 3d) ~40 сухих веток и коряг (dry_branches_medium_01_1k.gltf) в лесу и у озера
+  loadPlantVariants('dry_branches_medium_01_1k.gltf', 'maxHoriz').then((variants) => {
+    if (!variants) return;
+    const transforms = [];
+    const targetCount = 40;
+    for (let i = 0; i < targetCount; i++) {
+      let x = 0, z = 0, ok = false;
+      for (let attempt = 0; attempt < 35; attempt++) {
+        if (i < 24) {
+          // Западный лес (-215..-78, -145..145)
+          x = -78 - Math.random() * 137;
+          z = (Math.random() - 0.5) * 290;
+          if (!isClearGround(x, z)) continue;
+        } else {
+          // Побережье и окрестности Южного озера вокруг (0, 156)
+          const ang = Math.random() * Math.PI * 2;
+          const rad = 34 + Math.random() * 34;
+          x = Math.cos(ang) * rad;
+          z = 156 + Math.sin(ang) * rad;
+          if (Math.abs(x) < 6.5 && z < 146) continue; // Не перекрываем дорогу и пирс
+          if (Math.abs(x) > HALF_WORLD - 12 || Math.abs(z) > HALF_WORLD - 12) continue;
+        }
+        ok = true;
+        break;
+      }
+      if (!ok) continue;
+      const len = 1.45 + Math.random() * 1.45;
+      transforms.push({
+        x,
+        y: -0.02,
+        z,
+        rotY: Math.random() * Math.PI * 2,
+        tiltX: (Math.random() - 0.5) * 0.14,
+        tiltZ: (Math.random() - 0.5) * 0.14,
+        sx: len,
+        sy: len * (0.85 + Math.random() * 0.3),
+        sz: len,
+      });
+    }
+    buildInstancedPlantGroup(variants, transforms, { castShadow: !isMobile, receiveShadow: true });
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -2064,14 +2546,10 @@ function updateGoldenAcorns(dt) {
       if (acornsCollected >= 10 && !goldenSkinUnlocked) {
         goldenSkinUnlocked = true;
         acornHudPill.classList.add('unlocked');
-        if (!BREED_ORDER.includes(PIG_TYPES.GOLDEN)) BREED_ORDER.push(PIG_TYPES.GOLDEN);
-        currentBreedIdx = BREED_ORDER.indexOf(PIG_TYPES.GOLDEN);
-        applyPlayerBreed(PIG_TYPES.GOLDEN);
-        btnBreed.classList.add('golden-btn');
         setTimeout(() => {
           sfx.bank();
           spawnBurst(pPos, 0xffd700, 26, 13, 1.4);
-          spawnFloatText(pPos, 'ЗОЛОТОЙ ХРЯК ОТКРЫТ!', '#ffd970');
+          addTrick('Все 10 золотых желудей!', 2500, pPos, '#ffd970');
         }, 350);
       }
     }
@@ -2621,59 +3099,8 @@ const npcs = [];
 const NPC_PHRASES = ['ХРЮЮЮ!', 'АЙ-ЯЙ!', 'ПОЛЕТЕЛИ!', 'УИИИИ!', 'СВИНСКИЙ БЕСПРЕДЕЛ!'];
 
 function spawnNpcs() {
-  const specs = [
-    // Центр (4)
-    { breed: PIG_TYPES.CURLY,   x: -6,   z: -3 },
-    { breed: PIG_TYPES.APPLE,   x:  8,   z: -2 },
-    { breed: PIG_TYPES.SPOTTED, x: -10,  z:  8 },
-    { breed: PIG_TYPES.BOAR,    x:  13,  z: 10 },
-    // Север — Ферма (2)
-    { breed: PIG_TYPES.CLASSIC, x: -5,   z: -136 },
-    { breed: PIG_TYPES.SPOTTED, x:  9,   z: -144 },
-    // Восток — Стройка (2)
-    { breed: PIG_TYPES.BLACK,   x:  136, z: -4 },
-    { breed: PIG_TYPES.BOAR,    x:  144, z:  8 },
-    // Юг — Пляж (2)
-    { breed: PIG_TYPES.APPLE,   x: -10,  z:  134 },
-    { breed: PIG_TYPES.CURLY,   x:  12,  z:  138 },
-    // Запад — Скейт-парк (2)
-    { breed: PIG_TYPES.BLACK,   x: -132, z: -6 },
-    { breed: PIG_TYPES.CLASSIC, x: -152, z:  10 },
-  ];
-
-  specs.forEach((sp, i) => {
-    const model = createPigModel(sp.breed, { scale: 0.96, phase: i * 1.2 });
-    scene.add(model);
-
-    const body = new CANNON.Body({
-      mass: 15,
-      material: matNpc,
-      linearDamping: 0.16,
-      angularDamping: 0.30,
-      position: new CANNON.Vec3(sp.x, 1.2, sp.z),
-    });
-    body.addShape(new CANNON.Sphere(0.56));
-    body.angularFactor.set(0, 1, 0);
-    body.allowSleep = true;
-    world.addBody(body);
-
-    const npc = {
-      breed: sp.breed,
-      homeX: sp.x,
-      homeZ: sp.z,
-      model,
-      body,
-      state: 'wander',
-      stateTimer: 1 + Math.random() * 3,
-      ragdollTimer: 0,
-      fleeTimer: 0,
-      targetAngle: Math.random() * Math.PI * 2,
-      yaw: Math.random() * Math.PI * 2,
-      knockCooldown: 0,
-    };
-    body.userData = { npc };
-    npcs.push(npc);
-  });
+  // Спавн NPC-хряков отключён для экономии FPS (массив npcs остаётся пустым)
+  npcs.length = 0;
 }
 
 function knockNpc(npc, dirVec, power = 16, customTrick = null, awardPoints = true) {
@@ -2697,6 +3124,7 @@ function knockNpc(npc, dirVec, power = 16, customTrick = null, awardPoints = tru
 }
 
 function updateNpcs(dt) {
+  if (npcs.length === 0) return;
   const threatPos = inTractor ? tractor.body.position : playerBody.position;
   for (const npc of npcs) {
     if (npc.knockCooldown > 0) npc.knockCooldown -= dt;
@@ -3158,7 +3586,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyF') doHeadbutt();
   if (e.code === 'KeyT') toggleTractor();
   if (e.code === 'KeyV') toggleCameraMode();
-  if (e.code === 'KeyC') switchPlayerBreed();
+  // Смена породы (KeyC) временно отключена до добавления новых 3D-моделей
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
@@ -3281,33 +3709,9 @@ btnTrNitro.addEventListener('pointerdown', (e) => {
   btnTrNitro.addEventListener(ev, () => setNitro(false));
 });
 
-function applyPlayerBreed(newBreed) {
-  const oldPos = playerPig.position.clone(), oldRot = playerPig.rotation.clone(), wasVis = playerPig.visible;
-  playerPig.userData.disposeShadow();
-  scene.remove(playerPig);
-
-  playerPig = createPigModel(newBreed, { scale: 1.0 });
-  playerPig.position.copy(oldPos); playerPig.rotation.copy(oldRot); playerPig.visible = wasVis;
-  scene.add(playerPig);
-
-  const drvVis = tractor.driverPig.visible;
-  tractor.driverSeat.remove(tractor.driverPig);
-  tractor.driverPig = createPigModel(newBreed, { scale: 0.85 });
-  tractor.driverPig.userData.disposeShadow();
-  tractor.driverPig.visible = drvVis;
-  tractor.driverSeat.add(tractor.driverPig);
-
-  btnBreed.innerHTML = `${newBreed === PIG_TYPES.GOLDEN ? ICONS.crown : ICONS.pig}<span>${PIG_LABELS[newBreed]}</span>`;
-  btnBreed.classList.toggle('golden-btn', newBreed === PIG_TYPES.GOLDEN);
-}
-
-function switchPlayerBreed() {
-  currentBreedIdx = (currentBreedIdx + 1) % BREED_ORDER.length;
-  const newBreed = BREED_ORDER[currentBreedIdx];
-  applyPlayerBreed(newBreed);
-  sfx.oink();
-  spawnBurst(playerBody.position, newBreed === PIG_TYPES.GOLDEN ? 0xffd700 : 0xffe44a, 8, 6);
-}
+// Выбор породы/скинов временно отключён, пока не добавлены отдельные 3D-модели
+if (btnBreed) btnBreed.style.display = 'none';
+function switchPlayerBreed() {}
 
 function toggleCameraMode() {
   firstPerson = !firstPerson;
@@ -3393,7 +3797,7 @@ function resetSandbox() {
   spawnFloatText(playerBody.position, 'СБРОС ПЕСОЧНИЦЫ!', '#75ff88');
 }
 
-btnBreed.addEventListener('click', (e) => { e.stopPropagation(); switchPlayerBreed(); });
+// Кнопка смены породы скрыта и отключена
 btnCam.addEventListener('click', (e) => { e.stopPropagation(); toggleCameraMode(); });
 btnSound.addEventListener('click', (e) => {
   e.stopPropagation(); sfx.enabled = !sfx.enabled;
