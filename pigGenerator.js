@@ -24,7 +24,7 @@ export const PIG_LABELS = Object.freeze({
 });
 
 const HRYAK_MODEL_URL = './models/hryak.glb';
-const HRYAK_TARGET_LENGTH = 1.5; // Целевая длина модели в метрах
+const HRYAK_TARGET_LENGTH = 2.4; // Увеличенный масштаб (~2.3–2.4 м, солидный размер на фоне домов Kenney)
 const HRYAK_FORWARD_YAW = 0;     // Базовый разворот модели (+Z вперёд)
 
 const resourceCache = {
@@ -51,33 +51,46 @@ function buildCachedGlbBreedMaterials(templateRoot) {
   const originalMats = [];
   const matIndexMap = new Map();
 
-  templateRoot.traverse((obj) => {
-    if (!obj.isMesh) return;
-    obj.castShadow = true;
-    obj.receiveShadow = true;
-    const list = Array.isArray(obj.material) ? obj.material : [obj.material];
-    const indices = list.map((m) => {
-      if (!m) return -1;
-      if (m.map) setSRGB(m.map);
-      if (m.roughness !== undefined && m.roughness < 0.25) m.roughness = 0.65;
-      if (!matIndexMap.has(m)) {
-        matIndexMap.set(m, originalMats.length);
-        originalMats.push(m);
+  templateRoot.traverse((child) => {
+    if (!child.isMesh || !child.material) return;
+    child.castShadow = true;
+    child.receiveShadow = true;
+    if (child.geometry) {
+      child.geometry.computeVertexNormals();
+    }
+    const list = Array.isArray(child.material) ? child.material : [child.material];
+    const indices = list.map((mat) => {
+      if (!mat) return -1;
+      // Принудительный сброс PBR-параметров, чтобы без envMap модель не рендерилась чёрным силуэтом
+      if ('metalness' in mat) mat.metalness = 0.05;
+      if ('roughness' in mat) mat.roughness = 0.75;
+      if (mat.color) mat.color.setHex(0xffffff);
+      if (mat.map) {
+        if ('SRGBColorSpace' in THREE) mat.map.colorSpace = THREE.SRGBColorSpace;
+        else mat.map.encoding = THREE.sRGBEncoding;
+        mat.map.needsUpdate = true;
       }
-      return matIndexMap.get(m);
+      mat.side = THREE.DoubleSide;
+      mat.needsUpdate = true;
+
+      if (!matIndexMap.has(mat)) {
+        matIndexMap.set(mat, originalMats.length);
+        originalMats.push(mat);
+      }
+      return matIndexMap.get(mat);
     });
-    obj.userData._glbMatIndices = indices;
-    obj.userData._glbMatIsArray = Array.isArray(obj.material);
+    child.userData._glbMatIndices = indices;
+    child.userData._glbMatIsArray = Array.isArray(child.material);
   });
 
   const breedTints = {
-    [PIG_TYPES.CLASSIC]: null, // Оригинальные материалы без изменений
+    [PIG_TYPES.CLASSIC]: null, // Оригинальные материалы (цвет 0xffffff, metalness 0.05, roughness 0.75)
     [PIG_TYPES.CURLY]:   { color: 0xf7e6d6 },
-    [PIG_TYPES.APPLE]:   { color: 0xe6453c, roughness: 0.42 },
+    [PIG_TYPES.APPLE]:   { color: 0xe6453c, roughness: 0.55 },
     [PIG_TYPES.SPOTTED]: { color: 0xf2f4fa },
     [PIG_TYPES.BOAR]:    { color: 0x9c7b5c },
     [PIG_TYPES.BLACK]:   { color: 0x52545e },
-    [PIG_TYPES.GOLDEN]:  { color: 0xffd547, metalness: 0.72, roughness: 0.24, emissive: 0x3d2800 },
+    [PIG_TYPES.GOLDEN]:  { color: 0xffd547, metalness: 0.25, roughness: 0.35, emissive: 0x5c3d00 },
   };
 
   const materialsByBreed = new Map();
@@ -781,6 +794,8 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
 
   let usingGlb = false;
   let disposed = false;
+  let shadowBaseScaleX = 1.0;
+  let shadowBaseScaleZ = 1.0;
 
   function attachGlbClone(cache) {
     if (!cache || disposed || usingGlb) return;
@@ -802,6 +817,8 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
     glbSlot.add(clone);
     fallback.group.visible = false;
     snoutTip.position.copy(cache.snoutPos);
+    shadowBaseScaleX = Math.max(1.0, (cache.size.x * 1.15) / 1.55);
+    shadowBaseScaleZ = Math.max(1.0, (cache.size.z * 1.08) / 2.05);
     usingGlb = true;
     root.userData.usingGlb = true;
     root.userData.triangles = cache.triangles;
@@ -1044,7 +1061,7 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
     const shrink = Math.max(0.42, 1 - height * 0.055) * scale;
     contactShadow.position.set(root.position.x, groundY + 0.03, root.position.z);
     contactShadow.rotation.set(-Math.PI / 2, root.rotation.y, 0);
-    contactShadow.scale.setScalar(shrink);
+    contactShadow.scale.set(shrink * shadowBaseScaleX, shrink * shadowBaseScaleZ, 1);
     shadowMat.opacity = Math.max(0.18, 0.80 - height * 0.055);
   }
 
