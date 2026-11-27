@@ -3552,7 +3552,14 @@ let nitroActive = false;
 let camYaw = 0;
 let camPitch = 0.28;
 let playerYaw = Math.PI;
+let targetYaw = Math.PI;
 let elapsedTime = 0;
+
+function lerpAngle(currentYaw, targetAngle, t) {
+  const twoPi = Math.PI * 2;
+  let diff = ((targetAngle - currentYaw + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
+  return currentYaw + diff * Math.min(1, Math.max(0, t));
+}
 
 // ----------------------------------------------------------------------------
 // 11. СТРОИМ МИР, ТРАКТОР, NPC, ПРОПСЫ И ЖЁЛУДИ
@@ -3774,6 +3781,10 @@ function toggleTractor() {
     tractor.body.quaternion.vmult(sideOffset, sideOffset);
     playerBody.type = CANNON.Body.DYNAMIC;
     playerBody.collisionResponse = true;
+    const trFwd = new CANNON.Vec3(0, 0, 1);
+    tractor.body.quaternion.vmult(trFwd, trFwd);
+    playerYaw = Math.atan2(trFwd.x, trFwd.z);
+    targetYaw = playerYaw;
     playerBody.position.copy(tractor.body.position).vadd(sideOffset, playerBody.position);
     playerBody.velocity.set(tractor.body.velocity.x * 0.35, 3.8, tractor.body.velocity.z * 0.35);
     playerPig.visible = !firstPerson;
@@ -3917,14 +3928,20 @@ function updatePlayer(dt, input) {
       playerBody.velocity.z += moveZ * dt * 10;
     }
 
+    // Гасим любые паразитные вращения физического сферического коллайдера при столкновениях
+    playerBody.angularVelocity.set(0, 0, 0);
+    playerBody.quaternion.set(0, 0, 0, 1);
+
     if (firstPerson) {
-      playerYaw = camYaw + Math.PI;
-    } else if (moving) {
-      const desired = Math.atan2(moveX, moveZ);
-      let diff = desired - playerYaw;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      playerYaw += diff * Math.min(1, dt * 12);
+      targetYaw = camYaw + Math.PI;
+      playerYaw = targetYaw;
+    } else {
+      // Целевой угол поворота вычисляется ИСКЛЮЧИТЕЛЬНО из отклонения джойстика/клавиш управления
+      if (moving) {
+        targetYaw = Math.atan2(moveX, moveZ);
+      }
+      const turnRate = grounded ? (dt * 10) : (dt * 5);
+      playerYaw = lerpAngle(playerYaw, targetYaw, turnRate);
     }
 
     playerPig.position.set(p.x, p.y - 0.58, p.z);
@@ -3932,8 +3949,7 @@ function updatePlayer(dt, input) {
 
     let anim = 'idle';
     if (kickAnimTimer > 0) anim = 'kick';
-    else if (!grounded && p.y > 1.8) anim = 'run';
-    else if (moving) anim = 'run';
+    else if (grounded && moving) anim = 'run';
     playerPig.userData.update(dt, anim);
   }
 
@@ -4057,8 +4073,21 @@ function updateTractor(dt, input) {
   tractor.visual.quaternion.copy(b.quaternion);
 }
 
-const smoothCamPos = new THREE.Vector3(0, 5, 18);
-const smoothLookAt = new THREE.Vector3(0, 1, 11);
+const startDist = 6.4;
+const smoothCamPos = new THREE.Vector3(
+  playerBody.position.x + Math.sin(camYaw) * Math.cos(camPitch) * startDist,
+  playerBody.position.y + 1.35 + Math.sin(camPitch) * startDist,
+  playerBody.position.z + Math.cos(camYaw) * Math.cos(camPitch) * startDist
+);
+const smoothLookAt = new THREE.Vector3(
+  playerBody.position.x,
+  playerBody.position.y + 0.65,
+  playerBody.position.z
+);
+playerPig.position.set(playerBody.position.x, playerBody.position.y - 0.58, playerBody.position.z);
+playerPig.rotation.set(0, playerYaw, 0);
+camera.position.copy(smoothCamPos);
+camera.lookAt(smoothLookAt);
 
 function updateCamera(dt) {
   const ref = inTractor ? tractor.visual.position : playerBody.position;

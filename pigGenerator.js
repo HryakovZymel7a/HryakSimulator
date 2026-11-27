@@ -25,7 +25,7 @@ export const PIG_LABELS = Object.freeze({
 
 const HRYAK_MODEL_URL = './models/hryak.glb';
 const HRYAK_TARGET_LENGTH = 2.4; // Увеличенный масштаб (~2.3–2.4 м, солидный размер на фоне домов Kenney)
-const HRYAK_FORWARD_YAW = 0;     // Базовый разворот модели (+Z вперёд)
+const HRYAK_FORWARD_YAW = Math.PI; // Разворот ./models/hryak.glb на 180° — пятачком вперёд (+Z)
 
 const resourceCache = {
   breedMaterials: new Map(),
@@ -58,39 +58,51 @@ function buildCachedGlbBreedMaterials(templateRoot) {
     if (child.geometry) {
       child.geometry.computeVertexNormals();
     }
-    const list = Array.isArray(child.material) ? child.material : [child.material];
-    const indices = list.map((mat) => {
-      if (!mat) return -1;
-      // Принудительный сброс PBR-параметров, чтобы без envMap модель не рендерилась чёрным силуэтом
-      if ('metalness' in mat) mat.metalness = 0.05;
-      if ('roughness' in mat) mat.roughness = 0.75;
-      if (mat.color) mat.color.setHex(0xffffff);
-      if (mat.map) {
-        if ('SRGBColorSpace' in THREE) mat.map.colorSpace = THREE.SRGBColorSpace;
-        else mat.map.encoding = THREE.sRGBEncoding;
-        mat.map.needsUpdate = true;
+    const isArr = Array.isArray(child.material);
+    const list = isArr ? child.material : [child.material];
+    const converted = [];
+    const indices = list.map((oldMat) => {
+      if (!oldMat) {
+        converted.push(oldMat);
+        return -1;
       }
-      mat.side = THREE.DoubleSide;
-      mat.needsUpdate = true;
-
-      if (!matIndexMap.has(mat)) {
-        matIndexMap.set(mat, originalMats.length);
-        originalMats.push(mat);
+      if (!matIndexMap.has(oldMat)) {
+        const texMap = oldMat.map || null;
+        if (texMap) {
+          if ('SRGBColorSpace' in THREE) texMap.colorSpace = THREE.SRGBColorSpace;
+          else texMap.encoding = THREE.sRGBEncoding;
+          texMap.needsUpdate = true;
+        }
+        // MeshBasicMaterial с цветом 0xffdfd4 и SRGBColorSpace: полностью убирает тёмные запечённые тени по бокам
+        if (oldMat.map) {
+          oldMat.map.colorSpace = THREE.SRGBColorSpace;
+          oldMat.map.needsUpdate = true;
+        }
+        const basicMat = new THREE.MeshBasicMaterial({
+          map: oldMat.map || null,
+          color: 0xffdfd4,
+          side: THREE.DoubleSide,
+        });
+        matIndexMap.set(oldMat, originalMats.length);
+        originalMats.push(basicMat);
       }
-      return matIndexMap.get(mat);
+      const idx = matIndexMap.get(oldMat);
+      converted.push(originalMats[idx]);
+      return idx;
     });
+    child.material = isArr ? converted : converted[0];
     child.userData._glbMatIndices = indices;
-    child.userData._glbMatIsArray = Array.isArray(child.material);
+    child.userData._glbMatIsArray = isArr;
   });
 
   const breedTints = {
-    [PIG_TYPES.CLASSIC]: null, // Оригинальные материалы (цвет 0xffffff, metalness 0.05, roughness 0.75)
-    [PIG_TYPES.CURLY]:   { color: 0xf7e6d6 },
-    [PIG_TYPES.APPLE]:   { color: 0xe6453c, roughness: 0.55 },
-    [PIG_TYPES.SPOTTED]: { color: 0xf2f4fa },
-    [PIG_TYPES.BOAR]:    { color: 0x9c7b5c },
-    [PIG_TYPES.BLACK]:   { color: 0x52545e },
-    [PIG_TYPES.GOLDEN]:  { color: 0xffd547, metalness: 0.25, roughness: 0.35, emissive: 0x5c3d00 },
+    [PIG_TYPES.CLASSIC]: null, // Базовый светлый MeshLambertMaterial с текстурой hryak.glb
+    [PIG_TYPES.CURLY]:   { color: 0xffe6da },
+    [PIG_TYPES.APPLE]:   { color: 0xe6453c },
+    [PIG_TYPES.SPOTTED]: { color: 0xf4f6fc },
+    [PIG_TYPES.BOAR]:    { color: 0xb89574 },
+    [PIG_TYPES.BLACK]:   { color: 0x626570 },
+    [PIG_TYPES.GOLDEN]:  { color: 0xffd547, emissive: 0x5c3d00 },
   };
 
   const materialsByBreed = new Map();
@@ -199,8 +211,8 @@ export function preloadHryakModel() {
             }
           });
 
-          // Якорь передней точки пятачка (+Z) для липкого языка
-          const snoutPos = new THREE.Vector3(0, finalSize.y * 0.56, finalSize.z * 0.50);
+          // Якорь передней точки пятачка (строго спереди по +Z после разворота на 180°)
+          const snoutPos = new THREE.Vector3(0, finalSize.y * 0.54, finalSize.z * 0.52);
 
           hryakTemplateCache = {
             template,
@@ -909,28 +921,29 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
       }
 
       if (state === 'kick' || kickLunge > 0.05) {
-        animPivot.position.set(0, kickLunge * 0.10, kickLunge * 0.36);
-        animPivot.rotation.set(-0.22 * kickLunge, 0, 0);
+        // Резкий наклон вперёд и выпад пятаком (+Z) только при «Боднуть»
+        animPivot.position.set(0, kickLunge * 0.08, kickLunge * 0.42);
+        animPivot.rotation.set(0.24 * kickLunge, 0, 0);
         animPivot.scale.set(
-          sqX * (1 - kickLunge * 0.10),
-          sqY * (1 - kickLunge * 0.08),
-          sqZ * (1 + kickLunge * 0.22)
+          sqX * (1 - kickLunge * 0.08),
+          sqY * (1 - kickLunge * 0.06),
+          sqZ * (1 + kickLunge * 0.20)
         );
         return;
       }
 
       if (state === 'run' || state === 'walk') {
+        // Бодрое семенящее переваливание с боку на бок (roll по Z ±0.14 рад) + лёгкий частый bounce, без pitch
         const isRun = state === 'run';
-        const freq = isRun ? 16.5 : 11.0;
+        const freq = isRun ? 17.5 : 11.5;
         const t = time * freq;
         const bounce = Math.abs(Math.sin(t));
-        const roll = Math.sin(t) * (isRun ? 0.17 : 0.09);
-        const pitch = (isRun ? 0.07 : 0.03) + Math.cos(t * 2) * (isRun ? 0.055 : 0.025);
+        const roll = Math.sin(t) * (isRun ? 0.14 : 0.08);
 
-        animPivot.position.set(0, bounce * (isRun ? 0.17 : 0.07), 0);
-        animPivot.rotation.set(pitch, Math.sin(t) * (isRun ? 0.06 : 0.03), roll);
-        const stretch = (bounce - 0.45) * (isRun ? 0.09 : 0.04);
-        animPivot.scale.set(sqX * (1 - stretch * 0.6), sqY * (1 + stretch), sqZ * (1 - stretch * 0.4));
+        animPivot.position.set(0, bounce * (isRun ? 0.12 : 0.055), 0);
+        animPivot.rotation.set(0, 0, roll);
+        const stretch = (bounce - 0.5) * (isRun ? 0.06 : 0.03);
+        animPivot.scale.set(sqX * (1 - stretch * 0.5), sqY * (1 + stretch), sqZ * (1 - stretch * 0.35));
         return;
       }
 
