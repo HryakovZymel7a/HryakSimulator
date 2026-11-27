@@ -2,7 +2,6 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { createPigModel, preloadHryakModel, PIG_TYPES, PIG_LABELS } from './pigGenerator.js';
 
 // ============================================================================
@@ -396,7 +395,7 @@ const texRamp = makeSoftTex(256, (ctx, s) => {
 const canvas = document.getElementById('game-canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -406,21 +405,6 @@ else renderer.outputEncoding = THREE.sRGBEncoding;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0xcfeaff, 0.0028);
-
-// Кинематографичное IBL-освещение через PMREMGenerator + RoomEnvironment
-const ENV_IBL_INTENSITY = 0.35;
-try {
-  const pmremGenerator = new THREE.PMREMGenerator(renderer);
-  pmremGenerator.compileEquirectangularShader();
-  const roomEnv = new RoomEnvironment(renderer);
-  const envRT = pmremGenerator.fromScene(roomEnv, 0.04);
-  scene.environment = envRT.texture;
-  scene.environmentIntensity = ENV_IBL_INTENSITY;
-  roomEnv.dispose();
-  pmremGenerator.dispose();
-} catch (envErr) {
-  console.warn('PMREM RoomEnvironment init skipped:', envErr);
-}
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.15, 360);
 
@@ -465,12 +449,11 @@ const skyMat = new THREE.ShaderMaterial({
 const skyDome = new THREE.Mesh(new THREE.SphereGeometry(320, 24, 16), skyMat);
 scene.add(skyDome);
 
-scene.add(new THREE.HemisphereLight(0xcbe8ff, 0x5c8f46, 0.65));
-const sun = new THREE.DirectionalLight(0xfff2d6, 1.38);
+scene.add(new THREE.HemisphereLight(0xdff3ff, 0x4d7334, 0.9));
+const sun = new THREE.DirectionalLight(0xfff2d6, 1.35);
 sun.position.copy(sunDir).multiplyScalar(95);
 sun.castShadow = true;
-const shadowRes = isMobile ? 1024 : 2048;
-sun.shadow.mapSize.set(shadowRes, shadowRes);
+sun.shadow.mapSize.set(1024, 1024);
 sun.shadow.camera.near = 15;
 sun.shadow.camera.far = 220;
 const shD = 70;
@@ -507,7 +490,7 @@ world.addContactMaterial(new CANNON.ContactMaterial(matNpc,    matWorld,  { fric
 world.addContactMaterial(new CANNON.ContactMaterial(matTractor, matProp,  { friction: 0.20, restitution: 0.55 }));
 
 function stdMat(color, roughness = 0.78, metalness = 0.04) {
-  return new THREE.MeshStandardMaterial({ color, roughness, metalness, envMapIntensity: ENV_IBL_INTENSITY });
+  return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
 
 // ----------------------------------------------------------------------------
@@ -729,7 +712,6 @@ function loadModel(filename) {
               for (const m of mats) {
                 if (!m) continue;
                 if (m.map) setSRGBTex(m.map);
-                if ('envMapIntensity' in m) m.envMapIntensity = ENV_IBL_INTENSITY;
               }
             }
           });
@@ -868,7 +850,7 @@ function configurePBRTexture(baseTex, repeatX, repeatY, isColor) {
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
-  tex.anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy() || 1);
+  tex.anisotropy = Math.min(isMobile ? 4 : 8, renderer.capabilities.getMaxAnisotropy() || 1);
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
@@ -884,13 +866,15 @@ function configurePBRTexture(baseTex, repeatX, repeatY, isColor) {
 function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
   const {
     fallbackMap = null,
-    fallbackRoughness = 0.88,
-    roughness = 0.95,
-    normalScale = 0.85,
+    fallbackRoughness = 0.90,
+    roughness = 0.92,
+    useNormal = false,
+    useRoughness = false,
+    normalScale = 0.5,
     color = 0xffffff,
   } = options;
 
-  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${normalScale}|${color}`;
+  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${useNormal}|${useRoughness}|${normalScale}|${color}`;
   if (pbrMaterialCache.has(key)) return pbrMaterialCache.get(key);
 
   const mat = new THREE.MeshStandardMaterial({
@@ -898,7 +882,6 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     map: fallbackMap || null,
     roughness: fallbackRoughness,
     metalness: 0.0,
-    envMapIntensity: ENV_IBL_INTENSITY,
   });
   pbrMaterialCache.set(key, mat);
 
@@ -908,13 +891,13 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
 
   Promise.all([
     loadCachedRawTexture(colorUrl),
-    loadCachedRawTexture(normalUrl),
-    loadCachedRawTexture(roughUrl),
+    useNormal ? loadCachedRawTexture(normalUrl) : Promise.resolve(null),
+    useRoughness ? loadCachedRawTexture(roughUrl) : Promise.resolve(null),
   ]).then(([rawColor, rawNormal, rawRough]) => {
     let changed = false;
     if (rawColor) {
       const cTex = configurePBRTexture(rawColor, repeatX, repeatY, true);
-      if (cTex) { mat.map = cTex; changed = true; }
+      if (cTex) { mat.map = cTex; mat.roughness = roughness; changed = true; }
     }
     if (rawNormal) {
       const nTex = configurePBRTexture(rawNormal, repeatX, repeatY, false);
@@ -928,7 +911,6 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
       const rTex = configurePBRTexture(rawRough, repeatX, repeatY, false);
       if (rTex) {
         mat.roughnessMap = rTex;
-        mat.roughness = roughness;
         changed = true;
       }
     }
@@ -954,8 +936,10 @@ function prepareFoliageMaterial(srcMat) {
   mat.side = THREE.DoubleSide;
   mat.transparent = false;
   mat.depthWrite = true;
-  if ('metalness' in mat && mat.metalness > 0.2) mat.metalness = 0.05;
-  if ('envMapIntensity' in mat) mat.envMapIntensity = 0.28;
+  mat.normalMap = null;
+  mat.roughnessMap = null;
+  if ('roughness' in mat) mat.roughness = 0.9;
+  if ('metalness' in mat) mat.metalness = 0.0;
   mat.needsUpdate = true;
   return mat;
 }
@@ -1124,7 +1108,9 @@ function buildWorld() {
     fallbackMap: texGrass,
     fallbackRoughness: 0.92,
     roughness: 0.95,
-    normalScale: 0.85,
+    useNormal: true,
+    useRoughness: false,
+    normalScale: 0.5,
   });
   const grass = new THREE.Mesh(
     new THREE.PlaneGeometry(WORLD_SIZE + 180, WORLD_SIZE + 180),
@@ -1232,8 +1218,10 @@ function buildWorld() {
   const roadMat = loadPBRMaterial('Road012B_1K-JPG', 1, 42, {
     fallbackMap: texRoad,
     fallbackRoughness: 0.85,
-    roughness: 0.92,
-    normalScale: 0.90,
+    roughness: 0.90,
+    useNormal: true,
+    useRoughness: false,
+    normalScale: 0.5,
   });
   const rNS = new THREE.Mesh(new THREE.PlaneGeometry(9.2, 390), roadMat);
   rNS.rotation.x = -Math.PI / 2; rNS.position.y = 0.022; rNS.receiveShadow = true;
@@ -1469,7 +1457,8 @@ function buildWorld() {
     fallbackMap: texPlaza,
     fallbackRoughness: 0.88,
     roughness: 0.90,
-    normalScale: 0.75,
+    useNormal: false,
+    useRoughness: false,
   });
   const plaza = new THREE.Mesh(
     new THREE.CylinderGeometry(20, 20.4, 0.08, 32),
@@ -1709,7 +1698,8 @@ function buildWorld() {
     fallbackMap: texConcrete,
     fallbackRoughness: 0.90,
     roughness: 0.92,
-    normalScale: 0.80,
+    useNormal: false,
+    useRoughness: false,
   });
   const siteGround = new THREE.Mesh(
     new THREE.BoxGeometry(66, 0.08, 66),
@@ -1885,7 +1875,8 @@ function buildWorld() {
     fallbackMap: texConcrete,
     fallbackRoughness: 0.78,
     roughness: 0.86,
-    normalScale: 0.75,
+    useNormal: false,
+    useRoughness: false,
   });
   const skatePad = new THREE.Mesh(
     new THREE.BoxGeometry(62, 0.08, 56),
@@ -1972,7 +1963,7 @@ function buildWorld() {
   const rockGeo = new THREE.DodecahedronGeometry(0.35, 0);
   const rockInst = new THREE.InstancedMesh(
     rockGeo,
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, envMapIntensity: ENV_IBL_INTENSITY }),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
     ROCK_COUNT
   );
   rockInst.castShadow = !isMobile; rockInst.receiveShadow = true;
@@ -2009,7 +2000,7 @@ function buildWorld() {
     crownGeo.translate(0, 4.5, 0);
 
     const trunkInst = new THREE.InstancedMesh(trunkGeo, stdMat(0x784c2c, 0.9), TREE_TOTAL);
-    const crownInst = new THREE.InstancedMesh(crownGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82, envMapIntensity: ENV_IBL_INTENSITY }), TREE_TOTAL);
+    const crownInst = new THREE.InstancedMesh(crownGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 }), TREE_TOTAL);
     trunkInst.castShadow = true; trunkInst.receiveShadow = true;
     crownInst.castShadow = true; crownInst.receiveShadow = true;
 
@@ -2123,14 +2114,86 @@ function buildWorld() {
     return null;
   }
 
-  // 3a) ~350 пучков 3D-травы (grass_medium_01_1k.gltf)
+  // 3a) Лёгкие стилизованные low-poly деревья (3-слойная крона + ствол через InstancedMesh)
+  (function spawnOptimizedTrees() {
+    const TREE_TOTAL = isMobile ? 95 : 135;
+    const trunkGeo = new THREE.CylinderGeometry(0.28, 0.50, 3.4, 6);
+    trunkGeo.translate(0, 1.7, 0);
+    const crownLowGeo = new THREE.ConeGeometry(2.35, 3.0, 7);
+    crownLowGeo.translate(0, 4.1, 0);
+    const crownMidGeo = new THREE.ConeGeometry(1.85, 2.7, 7);
+    crownMidGeo.translate(0, 5.7, 0);
+    const crownTopGeo = new THREE.ConeGeometry(1.20, 2.2, 7);
+    crownTopGeo.translate(0, 7.1, 0);
+
+    const trunkInst = new THREE.InstancedMesh(trunkGeo, stdMat(0x704526, 0.92), TREE_TOTAL);
+    const crownLowInst = new THREE.InstancedMesh(crownLowGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), TREE_TOTAL);
+    const crownMidInst = new THREE.InstancedMesh(crownMidGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), TREE_TOTAL);
+    const crownTopInst = new THREE.InstancedMesh(crownTopGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), TREE_TOTAL);
+
+    trunkInst.castShadow = true; trunkInst.receiveShadow = false;
+    crownLowInst.castShadow = true; crownLowInst.receiveShadow = false;
+    crownMidInst.castShadow = false; crownMidInst.receiveShadow = false;
+    crownTopInst.castShadow = false; crownTopInst.receiveShadow = false;
+
+    treePositions.length = 0;
+    let cnt = 0, tr = 0;
+    while (cnt < TREE_TOTAL && tr < TREE_TOTAL * 10) {
+      tr++;
+      const x = cnt < 36 ? (-82 - Math.random() * 130) : (Math.random() - 0.5) * (WORLD_SIZE - 26);
+      const z = cnt < 36 ? ((Math.random() - 0.5) * 235) : (Math.random() - 0.5) * (WORLD_SIZE - 26);
+      if (!isClearGround(x, z)) continue;
+
+      let tooClose = false;
+      for (let k = Math.max(0, treePositions.length - 35); k < treePositions.length; k++) {
+        if (Math.hypot(x - treePositions[k].x, z - treePositions[k].z) < 5.2) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+
+      const s = 0.72 + Math.random() * 0.52;
+      const sy = s * (0.88 + Math.random() * 0.34);
+      dummy.position.set(x, 0, z);
+      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      dummy.scale.set(s, sy, s);
+      dummy.updateMatrix();
+
+      trunkInst.setMatrixAt(cnt, dummy.matrix);
+      crownLowInst.setMatrixAt(cnt, dummy.matrix);
+      crownMidInst.setMatrixAt(cnt, dummy.matrix);
+      crownTopInst.setMatrixAt(cnt, dummy.matrix);
+
+      const hue = 0.27 + (Math.random() - 0.5) * 0.05;
+      tempColor.setHSL(hue, 0.52, 0.28 + Math.random() * 0.08);
+      crownLowInst.setColorAt(cnt, tempColor);
+      tempColor.setHSL(hue, 0.54, 0.35 + Math.random() * 0.08);
+      crownMidInst.setColorAt(cnt, tempColor);
+      tempColor.setHSL(hue, 0.56, 0.42 + Math.random() * 0.08);
+      crownTopInst.setColorAt(cnt, tempColor);
+
+      treePositions.push({ x, z });
+      cnt++;
+    }
+
+    trunkInst.count = cnt;
+    crownLowInst.count = cnt;
+    crownMidInst.count = cnt;
+    crownTopInst.count = cnt;
+    [trunkInst, crownLowInst, crownMidInst, crownTopInst].forEach((inst) => {
+      inst.instanceMatrix.needsUpdate = true;
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    });
+    scene.add(trunkInst, crownLowInst, crownMidInst, crownTopInst);
+    updateTreeColliderPool();
+  })();
+
+  // 3b) ~150 пучков 3D-травы (grass_medium_01_1k.gltf) — без теней для 60 FPS на Android
   loadPlantVariants('grass_medium_01_1k.gltf', 'height').then((variants) => {
     if (!variants) {
       spawnFallbackGrass();
       return;
     }
     const transforms = [];
-    const targetCount = 350;
+    const targetCount = 150;
     for (let i = 0; i < targetCount; i++) {
       const pt = sampleMeadowPoint(true);
       if (!pt) continue;
@@ -2148,17 +2211,17 @@ function buildWorld() {
         sz: w,
       });
     }
-    buildInstancedPlantGroup(variants, transforms, { castShadow: false, receiveShadow: true });
+    buildInstancedPlantGroup(variants, transforms, { castShadow: false, receiveShadow: false });
   });
 
-  // 3b) ~180 полевых цветов (flower_empodium_1k.gltf)
+  // 3c) ~100 полевых цветов (flower_empodium_1k.gltf) — без теней
   loadPlantVariants('flower_empodium_1k.gltf', 'height').then((variants) => {
     if (!variants) {
       spawnFallbackFlowers();
       return;
     }
     const transforms = [];
-    const targetCount = 180;
+    const targetCount = 100;
     for (let i = 0; i < targetCount; i++) {
       const pt = sampleMeadowPoint(true);
       if (!pt) continue;
@@ -2176,94 +2239,27 @@ function buildWorld() {
         sz: w,
       });
     }
-    buildInstancedPlantGroup(variants, transforms, { castShadow: false, receiveShadow: true });
+    buildInstancedPlantGroup(variants, transforms, { castShadow: false, receiveShadow: false });
   });
 
-  // 3c) ~70 пышных кустов (~1.5м) и невысоких деревьев (3.5–4.5м) из searsia_lucida_1k.gltf
-  loadPlantVariants('searsia_lucida_1k.gltf', 'height').then((variants) => {
-    if (!variants) {
-      spawnFallbackTreesAndBushes();
-      return;
-    }
-    const transforms = [];
-    const totalCount = 70;
-    treePositions.length = 0;
-
-    for (let i = 0; i < totalCount; i++) {
-      const isLargeTree = i >= 32; // ~32 куста (~1.5м) + ~38 деревьев (3.5–4.5м)
-      let pt = null;
-      for (let attempt = 0; attempt < 40; attempt++) {
-        let x, z;
-        if (isLargeTree && i < 52) {
-          // Часть крупных деревьев формирует густой Западный лес
-          x = -82 - Math.random() * 130;
-          z = (Math.random() - 0.5) * 230;
-        } else {
-          const cand = sampleMeadowPoint(i < 24);
-          if (!cand) continue;
-          x = cand.x; z = cand.z;
-        }
-        if (!isClearGround(x, z)) continue;
-        let tooClose = false;
-        const minSpacing = isLargeTree ? 6.2 : 3.2;
-        for (let k = 0; k < transforms.length; k++) {
-          if (Math.hypot(x - transforms[k].x, z - transforms[k].z) < minSpacing) {
-            tooClose = true;
-            break;
-          }
-        }
-        if (tooClose) continue;
-        pt = { x, z };
-        break;
-      }
-      if (!pt) continue;
-
-      const h = isLargeTree
-        ? (3.5 + Math.random() * 1.0)  // Невысокие деревья 3.5–4.5 м
-        : (1.4 + Math.random() * 0.55); // Пышные кусты ~1.5–1.95 м
-      const w = h * (0.92 + Math.random() * 0.22);
-
-      transforms.push({
-        x: pt.x,
-        y: 0,
-        z: pt.z,
-        rotY: Math.random() * Math.PI * 2,
-        tiltX: (Math.random() - 0.5) * 0.06,
-        tiltZ: (Math.random() - 0.5) * 0.06,
-        sx: w,
-        sy: h,
-        sz: w,
-      });
-
-      if (isLargeTree) {
-        treePositions.push({ x: pt.x, z: pt.z });
-      }
-    }
-
-    buildInstancedPlantGroup(variants, transforms, { castShadow: true, receiveShadow: true });
-    updateTreeColliderPool();
-  });
-
-  // 3d) ~40 сухих веток и коряг (dry_branches_medium_01_1k.gltf) в лесу и у озера
+  // 3d) ~25 сухих веток и коряг (dry_branches_medium_01_1k.gltf) в лесу и у озера — без теней
   loadPlantVariants('dry_branches_medium_01_1k.gltf', 'maxHoriz').then((variants) => {
     if (!variants) return;
     const transforms = [];
-    const targetCount = 40;
+    const targetCount = 25;
     for (let i = 0; i < targetCount; i++) {
       let x = 0, z = 0, ok = false;
       for (let attempt = 0; attempt < 35; attempt++) {
-        if (i < 24) {
-          // Западный лес (-215..-78, -145..145)
+        if (i < 15) {
           x = -78 - Math.random() * 137;
           z = (Math.random() - 0.5) * 290;
           if (!isClearGround(x, z)) continue;
         } else {
-          // Побережье и окрестности Южного озера вокруг (0, 156)
           const ang = Math.random() * Math.PI * 2;
           const rad = 34 + Math.random() * 34;
           x = Math.cos(ang) * rad;
           z = 156 + Math.sin(ang) * rad;
-          if (Math.abs(x) < 6.5 && z < 146) continue; // Не перекрываем дорогу и пирс
+          if (Math.abs(x) < 6.5 && z < 146) continue;
           if (Math.abs(x) > HALF_WORLD - 12 || Math.abs(z) > HALF_WORLD - 12) continue;
         }
         ok = true;
@@ -2283,7 +2279,7 @@ function buildWorld() {
         sz: len,
       });
     }
-    buildInstancedPlantGroup(variants, transforms, { castShadow: !isMobile, receiveShadow: true });
+    buildInstancedPlantGroup(variants, transforms, { castShadow: false, receiveShadow: false });
   });
 }
 
