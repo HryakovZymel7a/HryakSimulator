@@ -46,203 +46,37 @@ function setSRGB(tex) {
   else tex.encoding = THREE.sRGBEncoding;
 }
 
-// Проверка, является ли меш или материал отдельной причёской/волосами
-function isHairPart(meshName, matName) {
-  const hairRe = /hair|volos|bangs|chelk|wig|mane|mohawk|cap/i;
-  return hairRe.test(meshName || '') || hairRe.test(matName || '');
-}
-
-// Плавная функция smoothstep для мягких переходов масок кожи, ноздрей и складок
 function smoothstep(edge0, edge1, x) {
   const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
 }
 
-// Растеризует 3D-зоны меша (старое пятно причёски, глаза, ноздри) в UV-маску:
-// R = зона старой причёски на макушке/спине (стереть в чистую кожу),
-// G = зона глаз (сохранить чёткими),
-// B = зона ноздрей на пятаке (добавить мягкое затемнение внутри)
-function buildMeshZoneUvMask(geometry, w, h, flipY) {
-  if (!geometry || !geometry.attributes || !geometry.attributes.position || !geometry.attributes.uv) {
-    return null;
-  }
-  const pos = geometry.attributes.position;
-  const uv = geometry.attributes.uv;
-  const idx = geometry.index;
-
-  let minY = Infinity, maxY = -Infinity;
-  let minZ = Infinity, maxZ = -Infinity;
-  for (let i = 0; i < pos.count; i++) {
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z;
-    if (z > maxZ) maxZ = z;
-  }
-  const height = Math.max(0.001, maxY - minY);
-  const length = Math.max(0.001, maxZ - minZ);
-
-  const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = w;
-  maskCanvas.height = h;
-  const ctx = maskCanvas.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(0, 0, w, h);
-
-  const triCount = idx ? idx.count / 3 : Math.floor(pos.count / 3);
-  const drawTri = (a, b, c, color, strokeW) => {
-    const u0 = uv.getX(a) * w;
-    const v0 = (flipY ? (1 - uv.getY(a)) : uv.getY(a)) * h;
-    const u1 = uv.getX(b) * w;
-    const v1 = (flipY ? (1 - uv.getY(b)) : uv.getY(b)) * h;
-    const u2 = uv.getX(c) * w;
-    const v2 = (flipY ? (1 - uv.getY(c)) : uv.getY(c)) * h;
-    ctx.beginPath();
-    ctx.moveTo(u0, v0);
-    ctx.lineTo(u1, v1);
-    ctx.lineTo(u2, v2);
-    ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.fill();
-    if (strokeW > 0) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = strokeW;
-      ctx.lineJoin = 'round';
-      ctx.stroke();
-    }
-  };
-
-  // Проход 1 (R): старое тёмное пятно волос сверху головы/спины (строго позади глаз)
-  for (let t = 0; t < triCount; t++) {
-    const a = idx ? idx.getX(t * 3) : t * 3;
-    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
-    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
-    const cy = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
-    const cz = (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3;
-    const yNorm = (cy - minY) / height;
-    const zNorm = (cz - minZ) / length; // 0 = хвост, 1 = кончик пятака
-    if (yNorm > 0.80 && zNorm < 0.705) {
-      drawTri(a, b, c, '#ff0000', 8);
-    }
-  }
-
-  // Проход 2 (G): область глаз на верхней части морды
-  for (let t = 0; t < triCount; t++) {
-    const a = idx ? idx.getX(t * 3) : t * 3;
-    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
-    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
-    const cy = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
-    const cz = (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3;
-    const yNorm = (cy - minY) / height;
-    const zNorm = (cz - minZ) / length;
-    if (yNorm > 0.78 && yNorm < 0.91 && zNorm > 0.68 && zNorm < 0.82) {
-      drawTri(a, b, c, '#00ff00', 3);
-    }
-  }
-
-  // Проход 3 (B): область ноздрей на переднем торце пятака
-  for (let t = 0; t < triCount; t++) {
-    const a = idx ? idx.getX(t * 3) : t * 3;
-    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
-    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
-    const cy = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
-    const cz = (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3;
-    const yNorm = (cy - minY) / height;
-    const zNorm = (cz - minZ) / length;
-    if (yNorm > 0.58 && yNorm < 0.74 && zNorm > 0.86) {
-      drawTri(a, b, c, '#0000ff', 4);
-    }
-  }
-
-  return ctx.getImageData(0, 0, w, h).data;
-}
-
-// Строит карту нормалей (Sobel) из высот складок кожи, чтобы складки на шее и животе стали рельефнее
-function buildFoldNormalTexture(heightField, srcW, srcH, srcTex) {
-  const nw = Math.min(512, srcW);
-  const nh = Math.min(512, srcH);
-  const stepX = srcW / nw;
-  const stepY = srcH / nh;
-
-  const hGrid = new Float32Array(nw * nh);
-  for (let y = 0; y < nh; y++) {
-    const sy = Math.min(srcH - 1, Math.floor(y * stepY));
-    for (let x = 0; x < nw; x++) {
-      const sx = Math.min(srcW - 1, Math.floor(x * stepX));
-      hGrid[y * nw + x] = heightField[sy * srcW + sx];
-    }
-  }
-
-  const nCanvas = document.createElement('canvas');
-  nCanvas.width = nw;
-  nCanvas.height = nh;
-  const nCtx = nCanvas.getContext('2d');
-  const nImg = nCtx.createImageData(nw, nh);
-  const out = nImg.data;
-  const strength = 2.6;
-
-  for (let y = 0; y < nh; y++) {
-    const ym = y > 0 ? y - 1 : 0;
-    const yp = y < nh - 1 ? y + 1 : nh - 1;
-    for (let x = 0; x < nw; x++) {
-      const xm = x > 0 ? x - 1 : 0;
-      const xp = x < nw - 1 ? x + 1 : nw - 1;
-
-      const tl = hGrid[ym * nw + xm], tc = hGrid[ym * nw + x], tr = hGrid[ym * nw + xp];
-      const ml = hGrid[y  * nw + xm],                          mr = hGrid[y  * nw + xp];
-      const bl = hGrid[yp * nw + xm], bc = hGrid[yp * nw + x], br = hGrid[yp * nw + xp];
-
-      const dX = ((tr + 2 * mr + br) - (tl + 2 * ml + bl)) * strength;
-      const dY = ((bl + 2 * bc + br) - (tl + 2 * tc + tr)) * strength;
-      const invLen = 1.0 / Math.hypot(-dX, -dY, 1.0);
-
-      const p = (y * nw + x) * 4;
-      out[p]     = Math.round(((-dX * invLen) * 0.5 + 0.5) * 255);
-      out[p + 1] = Math.round(((-dY * invLen) * 0.5 + 0.5) * 255);
-      out[p + 2] = Math.round(((1.0 * invLen) * 0.5 + 0.5) * 255);
-      out[p + 3] = 255;
-    }
-  }
-
-  nCtx.putImageData(nImg, 0, 0);
-  const normalTex = new THREE.CanvasTexture(nCanvas);
-  normalTex.flipY = srcTex.flipY;
-  normalTex.wrapS = srcTex.wrapS;
-  normalTex.wrapT = srcTex.wrapT;
-  normalTex.magFilter = THREE.LinearFilter;
-  normalTex.minFilter = THREE.LinearMipmapLinearFilter;
-  normalTex.generateMipmaps = true;
-  normalTex.needsUpdate = true;
-  return normalTex;
-}
-
-// Программная обработка текстуры hryak.glb:
-// 1) Полностью убирает неровное чёрное пятно старой причёски -> однородная светло-розовая кожа
-// 2) Сохраняет глаза и добавляет лёгкое затемнение внутри ноздрей
-// 3) Усиливает контраст складок кожи и генерирует карту нормалей (normalMap)
-function buildCleanPinkSkinMaps(srcTex, geometry) {
-  if (!srcTex || !srcTex.image) return { map: null, normalMap: null };
+// Пропускаем родную текстуру (map) хряка через скрытый HTML5 <canvas>:
+// +200% яркости, повышенная локальная и общая контрастность и светло-розовый оттенок кожи,
+// чтобы тёмно-коричневая кожа стала светло-розовой, а глаза, зрачки, ноздри и граница волос были чёткими.
+function enhancePigNativeTexture(srcTex) {
+  if (!srcTex || !srcTex.image) return srcTex || null;
   try {
     const img = srcTex.image;
     const w = img.width || img.naturalWidth || 512;
     const h = img.height || img.naturalHeight || 512;
-    if (!w || !h) return { map: srcTex, normalMap: null };
+    if (!w || !h) return srcTex;
 
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(img, 0, 0, w, h);
-    const origData = ctx.getImageData(0, 0, w, h);
+    const imgData = ctx.getImageData(0, 0, w, h);
 
-    // Низкочастотная карта освещения для отделения рельефа складок и деталей от запечённой темноты
+    // Детальная низкочастотная карта освещения (128x128 -> w x h), чтобы мелкие детали
+    // (глаза, веки, белки глаз, ноздри) не размывались при осветлении тёмной спины и пуза
     const small = document.createElement('canvas');
-    small.width = 22;
-    small.height = 22;
+    small.width = 128;
+    small.height = 128;
     const sCtx = small.getContext('2d');
     sCtx.imageSmoothingEnabled = true;
-    sCtx.drawImage(canvas, 0, 0, 22, 22);
+    sCtx.drawImage(canvas, 0, 0, 128, 128);
 
     const blurCanvas = document.createElement('canvas');
     blurCanvas.width = w;
@@ -252,63 +86,68 @@ function buildCleanPinkSkinMaps(srcTex, geometry) {
     bCtx.drawImage(small, 0, 0, w, h);
     const lowData = bCtx.getImageData(0, 0, w, h).data;
 
-    // UV-маска 3D-зон: R = старое пятно на макушке, G = глаза, B = ноздри
-    const zoneMask = buildMeshZoneUvMask(geometry, w, h, srcTex.flipY);
-    const heightField = new Float32Array(w * h);
-    const px = origData.data;
+    const px = imgData.data;
+    for (let i = 0; i < px.length; i += 4) {
+      const r0 = px[i];
+      const g0 = px[i + 1];
+      const b0 = px[i + 2];
 
-    for (let p = 0, i = 0; i < px.length; p++, i += 4) {
-      const r = px[i];
-      const g = px[i + 1];
-      const b = px[i + 2];
-
-      const origLum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const origLum = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
       const lowLum = Math.max(20.0, 0.299 * lowData[i] + 0.587 * lowData[i + 1] + 0.114 * lowData[i + 2]);
       const ratio = origLum / lowLum;
 
-      const isOldHairZone = zoneMask ? (zoneMask[i] > 128) : false;
-      const isEyeZone     = zoneMask ? (zoneMask[i + 1] > 128) : false;
-      const isNostrilZone = zoneMask ? (zoneMask[i + 2] > 128) : false;
+      // Защита светлых пикселей белков глаз: низкая насыщенность + относительная яркость выше средней по соседству
+      const maxC = Math.max(r0, g0, b0);
+      const minC = Math.min(r0, g0, b0);
+      const sat = (maxC - minC) / Math.max(1.0, maxC);
+      const scleraMask = (1.0 - smoothstep(0.14, 0.21, sat))
+        * smoothstep(1.10, 1.24, ratio)
+        * smoothstep(82.0, 102.0, origLum);
 
-      // 1) Макушка и верх спины: полностью стираем неровное чёрное пятно до однородной светло-розовой кожи
-      if (isOldHairZone && !isEyeZone) {
-        const softSkin = Math.max(0.95, Math.min(1.03, 0.99 + (ratio - 1.0) * 0.08));
-        px[i]     = Math.min(255, 246.0 * softSkin);
-        px[i + 1] = Math.min(255, 190.0 * softSkin);
-        px[i + 2] = Math.min(255, 184.0 * softSkin);
-        heightField[p] = 0.5;
-        continue;
-      }
+      // Увеличение яркости на 200% (x3.0) в связке с выравниванием запечённых теней
+      // и защитой самых тёмных волос/зрачков от выбеливания
+      const liftFactor = (218.0 / Math.max(36.0, lowLum)) * 0.58 + 3.0 * 0.42;
+      const darkGuard = 0.22 + 0.78 * smoothstep(14.0, 36.0, origLum);
+      const gain = liftFactor * darkGuard;
 
-      // 2) Однородная светло-розовая кожа с выразительным контрастом складок
-      const foldDetail = Math.max(0.58, Math.min(1.12, 0.94 + (ratio - 1.0) * 0.78));
-      let outR = Math.min(255, 248.0 * foldDetail);
-      let outG = Math.min(255, 191.0 * foldDetail);
-      let outB = Math.min(255, 185.0 * foldDetail);
+      // Повышение локальной контрастности: глаза, зрачки, ноздри и граница волос остаются резкими и тёмными
+      const clampedRatio = Math.max(0.02, Math.min(2.5, ratio));
+      const localContrast = ratio < 1.0
+        ? Math.pow(clampedRatio, 1.60)
+        : Math.pow(clampedRatio, 0.22);
 
-      // Записываем высоту складки для карты нормалей (0..1)
-      heightField[p] = Math.max(0.0, Math.min(1.0, 0.5 + (ratio - 1.0) * 0.85));
+      let r = r0 * gain * localContrast;
+      let g = g0 * gain * localContrast;
+      let b = b0 * gain * localContrast;
 
-      // 3) Зона глаз: сохраняем чёткие тёмные зрачки и веки на светлой коже
-      if (isEyeZone) {
-        const eyeDark = 1.0 - smoothstep(0.58, 0.88, ratio);
-        if (eyeDark > 0.01) {
-          outR = outR * (1 - eyeDark) + (r * 0.78) * eyeDark;
-          outG = outG * (1 - eyeDark) + (g * 0.72) * eyeDark;
-          outB = outB * (1 - eyeDark) + (b * 0.72) * eyeDark;
-        }
-      }
+      // Общий подъём контрастности вокруг среднего тона (126)
+      r = (r - 126.0) * 1.32 + 126.0;
+      g = (g - 126.0) * 1.32 + 126.0;
+      b = (b - 126.0) * 1.32 + 126.0;
 
-      // 4) Зона ноздрей: добавляем аккуратное тёплое затемнение внутри углублений ноздрей
-      if (isNostrilZone) {
-        const nostrilDepth = 1.0 - smoothstep(0.52, 0.90, ratio);
-        if (nostrilDepth > 0.01) {
-          const d = Math.pow(nostrilDepth, 0.85) * 0.82;
-          outR = outR * (1 - d) + 74.0 * d;
-          outG = outG * (1 - d) + 34.0 * d;
-          outB = outB * (1 - d) + 32.0 * d;
-          heightField[p] = Math.max(0.0, heightField[p] - d * 0.45);
-        }
+      // Мягкое сжатие ярких светов (> 212), чтобы пятак и лоб не выгорали в чисто-белый
+      r = r <= 212.0 ? Math.max(0, r) : 212.0 + 43.0 * (1.0 - Math.exp(-(r - 212.0) / 68.0));
+      g = g <= 212.0 ? Math.max(0, g) : 212.0 + 43.0 * (1.0 - Math.exp(-(g - 212.0) / 68.0));
+      b = b <= 212.0 ? Math.max(0, b) : 212.0 + 43.0 * (1.0 - Math.exp(-(b - 212.0) / 68.0));
+
+      // Светло-розовый оттенок кожи (не применяется к белкам глаз scleraMask, тёмным волосам, зрачкам и ноздрям)
+      const curLum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const pinkMask = smoothstep(62.0, 148.0, curLum) * (1.0 - scleraMask);
+      const rPink = Math.min(255, r * 1.08 + 10.0);
+      const gPink = Math.min(255, g * 0.87 + 4.0);
+      const bPink = Math.min(255, b * 0.86 + 6.0);
+
+      const inv = 1.0 - pinkMask;
+      let outR = r * inv + rPink * pinkMask;
+      let outG = g * inv + gPink * pinkMask;
+      let outB = b * inv + bPink * pinkMask;
+
+      // Белки глаз остаются ярко-белыми (#ffffff) без розового оттенка
+      if (scleraMask > 0.001) {
+        const invSclera = 1.0 - scleraMask;
+        outR = outR * invSclera + 255.0 * scleraMask;
+        outG = outG * invSclera + 255.0 * scleraMask;
+        outB = outB * invSclera + 255.0 * scleraMask;
       }
 
       px[i]     = Math.max(0, Math.min(255, outR));
@@ -316,165 +155,77 @@ function buildCleanPinkSkinMaps(srcTex, geometry) {
       px[i + 2] = Math.max(0, Math.min(255, outB));
     }
 
-    ctx.putImageData(origData, 0, 0);
+    ctx.putImageData(imgData, 0, 0);
 
-    const outTex = new THREE.CanvasTexture(canvas);
-    outTex.flipY = srcTex.flipY;
-    outTex.wrapS = srcTex.wrapS;
-    outTex.wrapT = srcTex.wrapT;
-    outTex.magFilter = THREE.LinearFilter;
-    outTex.minFilter = THREE.LinearMipmapLinearFilter;
-    outTex.generateMipmaps = true;
-    setSRGB(outTex);
-    outTex.needsUpdate = true;
-
-    const normalTex = buildFoldNormalTexture(heightField, w, h, srcTex);
-    return { map: outTex, normalMap: normalTex };
+    const enhancedTex = new THREE.CanvasTexture(canvas);
+    enhancedTex.flipY = srcTex.flipY; // Сохраняем glTF UV-ориентацию (flipY = false)
+    enhancedTex.wrapS = srcTex.wrapS;
+    enhancedTex.wrapT = srcTex.wrapT;
+    enhancedTex.magFilter = THREE.LinearFilter;
+    enhancedTex.minFilter = THREE.LinearMipmapLinearFilter;
+    enhancedTex.generateMipmaps = true;
+    setSRGB(enhancedTex);
+    enhancedTex.needsUpdate = true;
+    return enhancedTex;
   } catch (err) {
-    console.warn('Не удалось обработать текстуру hryak.glb через Canvas:', err);
-    return { map: srcTex, normalMap: null };
+    console.warn('Не удалось осветлить текстуру hryak.glb через Canvas, оставлена исходная:', err);
+    return srcTex;
   }
 }
 
-// Процедурная текстура короткой стрижки «полубокс» для 3D-шапочки причёски
-let buzzCutTexCache = null;
-function getBuzzCutHairTexture() {
-  if (buzzCutTexCache) return buzzCutTexCache;
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 256;
-  const ctx = c.getContext('2d');
-  const rng = createRng(909);
-
-  // Мягкий градиент от глубокого тёмно-коричневого сверху к чуть более редкой щетине у края линии роста волос
-  const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0.0, '#1e1410');
-  grad.addColorStop(0.62, '#2a1c16');
-  grad.addColorStop(0.88, '#38261e');
-  grad.addColorStop(1.0, '#4a342a');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 256, 256);
-
-  // Мелкий зернистый штрих коротко стриженных волос
-  for (let i = 0; i < 2400; i++) {
-    const x = rng() * 256;
-    const y = rng() * 256;
-    const tone = rng();
-    ctx.fillStyle = tone > 0.65 ? 'rgba(92, 68, 56, 0.38)' : (tone < 0.3 ? 'rgba(14, 9, 7, 0.55)' : 'rgba(54, 38, 30, 0.42)');
-    ctx.fillRect(x, y, 1.6 + rng() * 1.4, 2.2 + rng() * 3.0);
-  }
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearMipmapLinearFilter;
-  tex.generateMipmaps = true;
-  setSRGB(tex);
-  tex.needsUpdate = true;
-  buzzCutTexCache = tex;
-  return tex;
-}
-
-// Создаёт отдельный аккуратный 3D-объект причёски «полубокс» (слегка приплюснутая тёмно-коричневая шапочка, roughness: 0.9)
-function createBuzzCutCapMesh(crownFit) {
-  const geo = new THREE.SphereGeometry(1, 28, 16, 0, Math.PI * 2, 0, Math.PI * 0.58);
-  const mat = new THREE.MeshStandardMaterial({
-    map: getBuzzCutHairTexture(),
-    color: 0x3a261e,
-    roughness: 0.9,
-    metalness: 0.0,
-    emissive: new THREE.Color(0x120b08),
-    emissiveIntensity: 0.14,
-  });
-  mat.userData.isHair = true;
-
-  const cap = new THREE.Mesh(geo, mat);
-  cap.name = 'hryak_buzzcut_hair';
-  cap.position.set(crownFit.x, crownFit.y, crownFit.z);
-  cap.scale.set(crownFit.rx, crownFit.ry, crownFit.rz);
-  cap.rotation.set(crownFit.pitch, 0, 0);
-  cap.castShadow = true;
-  cap.receiveShadow = true;
-  return cap;
-}
-
-// Сбор и кэширование материалов: однородная светло-розовая кожа + карта нормалей складок + затемнение ноздрей
-function buildCachedGlbBreedMaterials(pigModel) {
+// Сбор и кэширование материалов для каждой породы поверх осветлённой родной текстуры hryak.glb
+function buildCachedGlbBreedMaterials(templateRoot) {
   const originalMats = [];
   const matIndexMap = new Map();
 
-  pigModel.traverse((child) => {
+  templateRoot.traverse((child) => {
     if (!child.isMesh || !child.material) return;
     child.castShadow = true;
     child.receiveShadow = true;
     if (child.geometry && !child.geometry.attributes.normal) {
       child.geometry.computeVertexNormals();
     }
-
     const isArr = Array.isArray(child.material);
     const list = isArr ? child.material : [child.material];
     const converted = [];
-
     const indices = list.map((oldMat) => {
       if (!oldMat) {
         converted.push(oldMat);
         return -1;
       }
-      const isHair = isHairPart(child.name, oldMat.name);
-      const cacheKey = isHair ? 'hair' : oldMat;
-
-      if (!matIndexMap.has(cacheKey)) {
-        let mat;
-        if (isHair) {
-          mat = new THREE.MeshStandardMaterial({
-            map: getBuzzCutHairTexture(),
-            color: 0x3a261e,
-            emissive: new THREE.Color(0x120b08),
-            emissiveIntensity: 0.14,
-            roughness: 0.9,
-            metalness: 0.0,
-            side: THREE.DoubleSide,
-          });
-        } else {
-          const { map: pinkTex, normalMap } = buildCleanPinkSkinMaps(oldMat.map, child.geometry);
-          mat = new THREE.MeshStandardMaterial({
-            map: pinkTex,
-            emissiveMap: pinkTex,
-            normalMap: normalMap,
-            normalScale: new THREE.Vector2(1.45, 1.45),
-            color: pinkTex ? 0xffffff : 0xf5b7b1,
-            emissive: new THREE.Color(pinkTex ? 0xffcfc8 : 0x331515),
-            emissiveIntensity: 0.22,
-            roughness: 0.68,
-            metalness: 0.0,
-            side: THREE.DoubleSide,
-          });
-        }
-        mat.userData.isHair = isHair;
-        mat.needsUpdate = true;
-
-        matIndexMap.set(cacheKey, originalMats.length);
-        originalMats.push(mat);
+      if (!matIndexMap.has(oldMat)) {
+        const enhancedMap = enhancePigNativeTexture(oldMat.map || null);
+        // MeshStandardMaterial с осветлённой родной текстурой: чёткие глаза, ноздри и волосы + реакция на солнце и тени
+        const stdMat = new THREE.MeshStandardMaterial({
+          map: enhancedMap,
+          emissiveMap: enhancedMap,
+          color: 0xffffff,
+          emissive: new THREE.Color(0xffd4cc),
+          emissiveIntensity: 0.08,
+          roughness: 0.72,
+          metalness: 0.0,
+          side: THREE.DoubleSide,
+        });
+        stdMat.needsUpdate = true;
+        matIndexMap.set(oldMat, originalMats.length);
+        originalMats.push(stdMat);
       }
-
-      const idx = matIndexMap.get(cacheKey);
+      const idx = matIndexMap.get(oldMat);
       converted.push(originalMats[idx]);
       return idx;
     });
-
     child.material = isArr ? converted : converted[0];
     child.userData._glbMatIndices = indices;
     child.userData._glbMatIsArray = isArr;
   });
 
   const breedTints = {
-    [PIG_TYPES.CLASSIC]: null, // Светло-розовая кожа с сохранёнными глазами, ноздрями и тёмной чёлкой
-    [PIG_TYPES.CURLY]:   { color: 0xffe6e0 },
+    [PIG_TYPES.CLASSIC]: null, // Базовый MeshStandardMaterial с текстурой hryak.glb
+    [PIG_TYPES.CURLY]:   { color: 0xffe6da },
     [PIG_TYPES.APPLE]:   { color: 0xe6453c },
     [PIG_TYPES.SPOTTED]: { color: 0xf4f6fc },
     [PIG_TYPES.BOAR]:    { color: 0xb89574 },
-    [PIG_TYPES.BLACK]:   { color: 0x525560 },
+    [PIG_TYPES.BLACK]:   { color: 0x626570 },
     [PIG_TYPES.GOLDEN]:  { color: 0xffd547, emissive: 0x5c3d00 },
   };
 
@@ -486,13 +237,10 @@ function buildCachedGlbBreedMaterials(pigModel) {
     }
     const clonedSet = originalMats.map((orig) => {
       const m = orig.clone();
-      if (!orig.userData.isHair) {
-        if (m.color && spec.color !== undefined) m.color.setHex(spec.color);
-        if (spec.metalness !== undefined && 'metalness' in m) m.metalness = spec.metalness;
-        if (spec.roughness !== undefined && 'roughness' in m) m.roughness = spec.roughness;
-        if (spec.emissive !== undefined && m.emissive) m.emissive.setHex(spec.emissive);
-      }
-      m.needsUpdate = true;
+      if (m.color && spec.color !== undefined) m.color.setHex(spec.color);
+      if (spec.metalness !== undefined && 'metalness' in m) m.metalness = spec.metalness;
+      if (spec.roughness !== undefined && 'roughness' in m) m.roughness = spec.roughness;
+      if (spec.emissive !== undefined && m.emissive) m.emissive.setHex(spec.emissive);
       return m;
     });
     materialsByBreed.set(breedKey, clonedSet);
@@ -604,49 +352,6 @@ export function preloadHryakModel() {
             }
           });
 
-          // Автоматический расчёт точного центра макушки головы по верхним 4.5% вершин (для идеальной посадки 3D-причёски полубокс)
-          let cMinY = Infinity, cMaxY = -Infinity;
-          bakedTemplate.traverse((obj) => {
-            if (!obj.isMesh || !obj.geometry || !obj.geometry.attributes.position) return;
-            const pos = obj.geometry.attributes.position;
-            for (let i = 0; i < pos.count; i++) {
-              const py = pos.getY(i);
-              if (py < cMinY) cMinY = py;
-              if (py > cMaxY) cMaxY = py;
-            }
-          });
-          const cHeight = Math.max(0.001, cMaxY - cMinY);
-          const peakThreshold = cMaxY - cHeight * 0.045;
-          let peakMinX = Infinity, peakMaxX = -Infinity;
-          let peakMinZ = Infinity, peakMaxZ = -Infinity;
-          bakedTemplate.traverse((obj) => {
-            if (!obj.isMesh || !obj.geometry || !obj.geometry.attributes.position) return;
-            const pos = obj.geometry.attributes.position;
-            for (let i = 0; i < pos.count; i++) {
-              const py = pos.getY(i);
-              if (py >= peakThreshold) {
-                const px = pos.getX(i);
-                const pz = pos.getZ(i);
-                if (px < peakMinX) peakMinX = px;
-                if (px > peakMaxX) peakMaxX = px;
-                if (pz < peakMinZ) peakMinZ = pz;
-                if (pz > peakMaxZ) peakMaxZ = pz;
-              }
-            }
-          });
-
-          const crownFit = {
-            x: Number.isFinite(peakMinX) ? (peakMinX + peakMaxX) * 0.5 : 0,
-            y: Number.isFinite(cMaxY) ? (cMaxY - 0.118) : (finalSize.y * 0.92),
-            z: Number.isFinite(peakMinZ) ? ((peakMinZ + peakMaxZ) * 0.5 + 0.015) : (finalSize.z * 0.08),
-            rx: 0.260,
-            ry: 0.156,
-            rz: 0.270,
-            pitch: -0.02,
-            minY: Number.isFinite(cMinY) ? cMinY : 0,
-            height: cHeight,
-          };
-
           // Якорь передней точки пятачка (строго спереди по +Z)
           const snoutPos = new THREE.Vector3(0, finalSize.y * 0.54, finalSize.z * 0.52);
 
@@ -654,7 +359,6 @@ export function preloadHryakModel() {
             template: bakedTemplate,
             size: finalSize,
             snoutPos,
-            crownFit,
             triangles: Math.round(triangles),
             materialsByBreed,
           };
@@ -1246,8 +950,6 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
   let shadowBaseScaleX = 1.0;
   let shadowBaseScaleZ = 1.0;
   const animatedGlbMeshes = [];
-  let glbHairCap = null;
-  let glbCrownFit = null;
 
   function attachGlbClone(cache) {
     if (!cache || disposed || usingGlb) return;
@@ -1325,23 +1027,14 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
       });
     });
 
-    // Отдельный аккуратный 3D-объект причёски «полубокс» (слегка приплюснутая тёмно-коричневая шапочка, roughness 0.9)
-    if (key !== PIG_TYPES.APPLE && cache.crownFit) {
-      glbCrownFit = cache.crownFit;
-      glbHairCap = createBuzzCutCapMesh(cache.crownFit);
-      clone.add(glbHairCap);
-    }
-
     // Аксессуары для секретного Золотого и Яблочного хряка поверх .glb
     if (key === PIG_TYPES.GOLDEN) {
       const crown = buildCrownAccessory(mats.crown);
-      const cf = cache.crownFit || { x: 0, y: cache.size.y * 0.92, z: cache.size.z * 0.12, ry: 0.14 };
-      crown.position.set(cf.x, cf.y + cf.ry + 0.01, cf.z);
+      crown.position.set(0, cache.size.y * 0.96, cache.size.z * 0.14);
       clone.add(crown);
     } else if (key === PIG_TYPES.APPLE) {
       const appleTop = buildAppleTopAccessory(mats.hair, mats.leaf);
-      const cf = cache.crownFit || { x: 0, y: cache.size.y * 0.92, z: 0, ry: 0.14 };
-      appleTop.position.set(cf.x, cf.y + cf.ry, cf.z);
+      appleTop.position.set(0, cache.size.y * 0.95, 0);
       clone.add(appleTop);
     }
 
@@ -1573,26 +1266,6 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
         }
 
         entry.posAttr.needsUpdate = true;
-      }
-
-      // Синхронизируем отдельный 3D-объект причёски с вытягиванием в прыжке и дыханием корпуса
-      if (glbHairCap && glbCrownFit) {
-        if (jumpBlend > 0.005) {
-          glbHairCap.position.set(
-            glbCrownFit.x * squeezeXZ,
-            glbCrownFit.minY + (glbCrownFit.y - glbCrownFit.minY) * stretchY,
-            glbCrownFit.z * squeezeXZ
-          );
-          glbHairCap.scale.set(
-            glbCrownFit.rx * squeezeXZ,
-            glbCrownFit.ry * stretchY,
-            glbCrownFit.rz * squeezeXZ
-          );
-        } else {
-          const capBreathY = idleBreath !== 0 ? idleBreath * ((glbCrownFit.y - glbCrownFit.minY) / glbCrownFit.height) : 0;
-          glbHairCap.position.set(glbCrownFit.x, glbCrownFit.y + capBreathY, glbCrownFit.z);
-          glbHairCap.scale.set(glbCrownFit.rx, glbCrownFit.ry, glbCrownFit.rz);
-        }
       }
 
       // Вторичная динамика корпуса (переваливание при беге, основной наклон/выпад удара, пружина приземления)
