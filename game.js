@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { createPigModel, preloadHryakModel, PIG_TYPES, PIG_LABELS } from './pigGenerator.js';
 
 // ============================================================================
@@ -451,8 +452,13 @@ const skyMat = new THREE.ShaderMaterial({
 const skyDome = new THREE.Mesh(new THREE.SphereGeometry(620, 24, 16), skyMat);
 scene.add(skyDome);
 
-// Лёгкая процедурная карта окружения (PMREM) — обеспечивает реальную работу envMapIntensity и отражения на стёклах
-(function setupDaylightEnvMap() {
+const hemiLight = new THREE.HemisphereLight(0xdff3ff, 0x4d7334, 0.85);
+scene.add(hemiLight);
+
+// Фотореалистичное HDRI-небо и освещение (DayEnvironmentHDRI107_1K_HDR.exr через EXRLoader + PMREMGenerator)
+// До загрузки EXR работает мгновенный процедурный fallback, после загрузки skyDome убирается.
+(function setupHDRIEnvironment() {
+  let fallbackEnvRT = null;
   try {
     const c = document.createElement('canvas');
     c.width = 128;
@@ -471,15 +477,50 @@ scene.add(skyDome);
     setSRGBTex(envTex);
     const pmrem = new THREE.PMREMGenerator(renderer);
     pmrem.compileEquirectangularShader();
-    scene.environment = pmrem.fromEquirectangular(envTex).texture;
+    fallbackEnvRT = pmrem.fromEquirectangular(envTex);
+    scene.environment = fallbackEnvRT.texture;
     envTex.dispose();
     pmrem.dispose();
   } catch (err) {
-    console.warn('Процедурная карта окружения пропущена:', err);
+    console.warn('Временная карта окружения пропущена:', err);
   }
-})();
 
-scene.add(new THREE.HemisphereLight(0xdff3ff, 0x4d7334, 0.9));
+  const exrLoader = new EXRLoader();
+  exrLoader.setDataType(THREE.HalfFloatType);
+  exrLoader.load(
+    './textures/DayEnvironmentHDRI107_1K_HDR.exr',
+    (exrTexture) => {
+      try {
+        exrTexture.mapping = THREE.EquirectangularReflectionMapping;
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        pmrem.compileEquirectangularShader();
+        const envRT = pmrem.fromEquirectangular(exrTexture);
+        scene.environment = envRT.texture;
+        scene.background = envRT.texture;
+        if ('backgroundBlurriness' in scene) scene.backgroundBlurriness = 0.0;
+        if ('backgroundIntensity' in scene) scene.backgroundIntensity = 1.0;
+
+        // Убираем запасной градиентный купол и чуть приглушаем HemisphereLight под живой HDRI
+        skyDome.visible = false;
+        scene.remove(skyDome);
+        hemiLight.intensity = 0.45;
+
+        exrTexture.dispose();
+        pmrem.dispose();
+        if (fallbackEnvRT) {
+          fallbackEnvRT.dispose();
+          fallbackEnvRT = null;
+        }
+      } catch (err) {
+        console.warn('Ошибка применения HDRI через PMREMGenerator:', err);
+      }
+    },
+    undefined,
+    (err) => {
+      console.warn('HDRI ./textures/DayEnvironmentHDRI107_1K_HDR.exr не загружен, оставлен запасной небосвод:', err);
+    }
+  );
+})();
 const sun = new THREE.DirectionalLight(0xfff2d6, 1.35);
 sun.position.copy(sunDir).multiplyScalar(95);
 sun.castShadow = true;
@@ -1992,13 +2033,20 @@ function prepareFoliageMaterial(srcMat) {
     setSRGBTex(mat.map);
     mat.map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy() || 1);
   }
-  mat.alphaTest = 0.35;
+  mat.alphaTest = 0.5;
   mat.side = THREE.DoubleSide;
   mat.transparent = false;
   mat.depthWrite = true;
   mat.normalMap = null;
   mat.roughnessMap = null;
-  if ('roughness' in mat) mat.roughness = 0.9;
+  mat.aoMap = null;
+  mat.metalnessMap = null;
+  mat.vertexColors = false;
+  if (mat.color) {
+    const lum = 0.299 * mat.color.r + 0.587 * mat.color.g + 0.114 * mat.color.b;
+    if (lum < 0.25) mat.color.setHex(0x63ad44);
+  }
+  if ('roughness' in mat) mat.roughness = 0.86;
   if ('metalness' in mat) mat.metalness = 0.0;
   mat.needsUpdate = true;
   return mat;
@@ -2484,20 +2532,7 @@ function buildWorld() {
   rEW.rotation.x = -Math.PI / 2; rEW.rotation.z = Math.PI / 2; rEW.position.y = 0.018; rEW.receiveShadow = true;
   scene.add(rEW);
 
-  // Облака над всей долиной 500x500
-  const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 });
-  const cloudGeo = new THREE.IcosahedronGeometry(4.5, 1);
-  for (let i = 0; i < 26; i++) {
-    const cg = new THREE.Group();
-    cg.position.set((Math.random() - 0.5) * 460, 42 + Math.random() * 18, (Math.random() - 0.5) * 460);
-    for (let j = 0; j < 3; j++) {
-      const p = new THREE.Mesh(cloudGeo, cloudMat);
-      p.position.set((j - 1) * 4.2, j === 1 ? 1.1 : 0, (Math.random() - 0.5) * 1.8);
-      p.scale.set(1.25, 0.62, 0.95);
-      cg.add(p);
-    }
-    scene.add(cg);
-  }
+  // Старые мультяшные облака удалены — небо и облака рисуются фотореалистичной HDRI-картой
 
   // Хелпер коттеджей
   function createCottage(x, z, yaw, wallTex, roofTex, w = 9.5, h = 5.2, dep = 8.2) {
@@ -2638,26 +2673,66 @@ function buildWorld() {
     return { mesh: g, body };
   }
 
+  // Реалистичные PBR-материалы для батутов и скейт-парка (кэшируются 1 раз)
+  const trampolineRubberMat = loadPBRMaterial('Rubber004_1K-JPG', 3, 3, {
+    fallbackMap: texTrampoline,
+    fallbackRoughness: 0.86,
+    roughness: 0.84,
+    metalness: 0.04,
+    envMapIntensity: 1.0,
+    useNormal: true,
+    useRoughness: true,
+    normalScale: 0.72,
+  });
+  const trampolineMetalMat = loadPBRMaterial('Metal041B_1K-JPG', 4, 1, {
+    fallbackMap: texConcrete,
+    fallbackRoughness: 0.42,
+    roughness: 0.38,
+    metalness: 0.92,
+    envMapIntensity: 1.45,
+    useNormal: true,
+    useRoughness: true,
+    useMetalness: true,
+    normalScale: 0.62,
+  });
+  const skateRampConcreteMat = loadPBRMaterial('Concrete042C_1K-JPG', 2, 3, {
+    fallbackMap: texConcrete,
+    fallbackRoughness: 0.82,
+    roughness: 0.80,
+    metalness: 0.05,
+    envMapIntensity: 1.25,
+    useNormal: true,
+    useRoughness: true,
+    normalScale: 0.68,
+  });
+  const skateRailMetalMat = loadPBRMaterial('Metal041B_1K-JPG', 3, 1, {
+    fallbackMap: texConcrete,
+    fallbackRoughness: 0.42,
+    roughness: 0.36,
+    metalness: 0.92,
+    envMapIntensity: 1.45,
+    useNormal: true,
+    useRoughness: true,
+    useMetalness: true,
+    normalScale: 0.65,
+  });
+
   function createTrampoline(x, z, radius = 2.6, power = 23.5, yBase = 0) {
     noTreeZones.push({ x, z, r: radius + 2.5 });
     const g = new THREE.Group();
     g.position.set(x, yBase, z);
 
-    const rimMat = stdMat(0x2c82e0, 0.55, 0.15);
-    const legMat = stdMat(0x3a3f4a, 0.5, 0.4);
-    const padMat = new THREE.MeshStandardMaterial({ map: texTrampoline, roughness: 0.65 });
-
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
-      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.8, 8), legMat);
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.8, 8), trampolineMetalMat);
       leg.position.set(Math.cos(a) * (radius - 0.25), 0.4, Math.sin(a) * (radius - 0.25));
       leg.castShadow = true;
       g.add(leg);
     }
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.26, 10, 24), rimMat);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.26, 12, 28), trampolineMetalMat);
     rim.rotation.x = Math.PI / 2; rim.position.y = 0.82;
     rim.castShadow = true; rim.receiveShadow = true;
-    const pad = new THREE.Mesh(new THREE.CylinderGeometry(radius - 0.12, radius - 0.12, 0.14, 24), padMat);
+    const pad = new THREE.Mesh(new THREE.CylinderGeometry(radius - 0.12, radius - 0.12, 0.14, 28), trampolineRubberMat);
     pad.position.y = 0.80; pad.receiveShadow = true;
     g.add(rim, pad);
     scene.add(g);
@@ -2669,7 +2744,7 @@ function buildWorld() {
     trampolines.push({ x, yBase, z, radius, power, group: g, pad, bounceAnim: 0, cooldowns: new Map() });
   }
 
-  function createRamp(x, z, yaw, width = 6.2, length = 8.6, angle = 0.35, yBase = 0) {
+  function createRamp(x, z, yaw, width = 6.2, length = 8.6, angle = 0.35, yBase = 0, isSkate = false) {
     noTreeZones.push({ x, z, r: Math.max(width, length) * 0.85 });
     const thickness = 0.55;
     const cy = yBase + (length / 2) * Math.sin(angle) - (thickness / 2) * Math.cos(angle) - 0.03;
@@ -2677,16 +2752,27 @@ function buildWorld() {
     rg.position.set(x, 0, z);
     rg.rotation.y = yaw;
 
-    const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(width, thickness, length),
-      new THREE.MeshStandardMaterial({ map: texRamp, roughness: 0.62 })
-    );
+    const deckMat = isSkate
+      ? skateRampConcreteMat
+      : new THREE.MeshStandardMaterial({ map: texRamp, roughness: 0.62 });
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(width, thickness, length), deckMat);
     deck.position.y = cy; deck.rotation.x = angle;
     deck.castShadow = true; deck.receiveShadow = true;
     rg.add(deck);
 
+    // Металлические бортики (Metal041B) для скейт-рамп
+    if (isSkate) {
+      for (const sx of [-width / 2 - 0.12, width / 2 + 0.12]) {
+        const curb = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.68, length), skateRailMetalMat);
+        curb.position.set(sx, cy + 0.24, 0);
+        curb.rotation.x = angle;
+        curb.castShadow = true; curb.receiveShadow = true;
+        rg.add(curb);
+      }
+    }
+
     const highH = length * Math.sin(angle);
-    const pMat = stdMat(0x403b38, 0.8);
+    const pMat = isSkate ? skateRailMetalMat : stdMat(0x403b38, 0.8);
     for (const sx of [-width / 2 + 0.45, width / 2 - 0.45]) {
       const p = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.30, highH, 8), pMat);
       p.position.set(sx, yBase + highH / 2, -length / 2 + 0.6);
@@ -3089,44 +3175,161 @@ function buildWorld() {
   }
 
   // ==========================================================================
-  // БИОМ 4: ЮГ (0, 140) — ОЗЕРО И ПЛЯЖ (Песок, вода, пирс, трамплины над водой)
+  // БИОМ 4: ЮГ (0, 140) — ОЗЕРО И ПЛЯЖ (Песок Ground080, зеркальная HDRI-вода, пирс Planks039)
   // ==========================================================================
   noTreeZones.push({ x: 0, z: 146, r: 54 });
-  // Песчаный пляж
+  // Песчаный пляж: PBR-набор Ground080_1K-JPG (Color, NormalGL, Roughness) с повторением текстуры
+  const beachSandMat = loadPBRMaterial('Ground080_1K-JPG', 16, 16, {
+    fallbackMap: texSand,
+    fallbackRoughness: 0.92,
+    roughness: 0.92,
+    metalness: 0.02,
+    useNormal: true,
+    useRoughness: true,
+    normalScale: 0.72,
+  });
   const beach = new THREE.Mesh(
-    new THREE.CylinderGeometry(48, 49, 0.06, 36),
-    new THREE.MeshStandardMaterial({ map: texSand, roughness: 0.92 })
+    new THREE.CylinderGeometry(48, 49, 0.06, 40),
+    beachSandMat
   );
   beach.position.set(0, 0.02, 146); beach.receiveShadow = true;
   scene.add(beach);
 
-  // Бирюзовая гладь озера (0, 156)
-  lakeMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(32, 32, 0.12, 36),
-    new THREE.MeshStandardMaterial({
-      map: texWater,
-      color: 0x45c4ff,
-      roughness: 0.14,
-      metalness: 0.12,
-      transparent: true,
-      opacity: 0.86,
-    })
+  // Тёмное дно под озером (подчёркивает глубину полупрозрачной тёмно-бирюзовой воды)
+  const lakeBed = new THREE.Mesh(
+    new THREE.CircleGeometry(32.2, 44),
+    stdMat(0x062c36, 0.95, 0.0)
   );
-  lakeMesh.position.set(0, 0.09, 156);
-  lakeMesh.receiveShadow = true;
-  scene.add(lakeMesh);
+  lakeBed.rotation.x = -Math.PI / 2;
+  lakeBed.position.set(0, 0.06, 156);
+  lakeBed.receiveShadow = true;
+  scene.add(lakeBed);
 
-  // Деревянный пирс над водой + трамплин на конце пирса!
+  // Полупрозрачная тёмно-бирюзовая вода с зеркальным отражением HDRI-неба (roughness: 0.08, metalness: 0.8) и анимацией волн
+  (function createAnimatedLakeWater() {
+    // Процедурная бесшовная normal-карта мелкой ряби на воде
+    const wSize = 128;
+    const wCanvas = document.createElement('canvas');
+    wCanvas.width = wSize;
+    wCanvas.height = wSize;
+    const wCtx = wCanvas.getContext('2d');
+    const wImg = wCtx.createImageData(wSize, wSize);
+    const wd = wImg.data;
+    const twoPi = Math.PI * 2;
+    for (let y = 0; y < wSize; y++) {
+      const ny = (y / wSize) * twoPi;
+      for (let x = 0; x < wSize; x++) {
+        const nx = (x / wSize) * twoPi;
+        const dhx = Math.cos(nx * 2 + ny) * 0.42 + Math.cos(nx * 4 - ny * 2) * 0.25 + Math.cos(nx * 6 + ny * 3) * 0.14;
+        const dhy = Math.sin(ny * 2 - nx) * 0.42 + Math.cos(ny * 5 + nx * 2) * 0.22 + Math.sin(ny * 7 - nx * 3) * 0.12;
+        const len = Math.hypot(dhx, dhy, 1.0);
+        const idx = (y * wSize + x) * 4;
+        wd[idx]     = Math.round(((-dhx / len) * 0.5 + 0.5) * 255);
+        wd[idx + 1] = Math.round(((-dhy / len) * 0.5 + 0.5) * 255);
+        wd[idx + 2] = Math.round(((1.0 / len) * 0.5 + 0.5) * 255);
+        wd[idx + 3] = 255;
+      }
+    }
+    wCtx.putImageData(wImg, 0, 0);
+    const waterNormalTex = new THREE.CanvasTexture(wCanvas);
+    waterNormalTex.wrapS = THREE.RepeatWrapping;
+    waterNormalTex.wrapT = THREE.RepeatWrapping;
+    waterNormalTex.repeat.set(9, 9);
+    waterNormalTex.needsUpdate = true;
+
+    // Разбитый по кольцам круглый меш озера для мягкой 3D-анимации волн
+    const radius = 32;
+    const rings = 14;
+    const segs = 44;
+    const vCount = 1 + rings * segs;
+    const pos = new Float32Array(vCount * 3);
+    const uvs = new Float32Array(vCount * 2);
+    const idx = [];
+    pos[0] = 0; pos[1] = 0; pos[2] = 0;
+    uvs[0] = 0.5; uvs[1] = 0.5;
+
+    let vi = 1;
+    for (let r = 1; r <= rings; r++) {
+      const frac = r / rings;
+      const rad = frac * radius;
+      for (let s = 0; s < segs; s++) {
+        const ang = (s / segs) * twoPi;
+        const vx = Math.cos(ang) * rad;
+        const vz = Math.sin(ang) * rad;
+        pos[vi * 3]     = vx;
+        pos[vi * 3 + 1] = 0;
+        pos[vi * 3 + 2] = vz;
+        uvs[vi * 2]     = 0.5 + (vx / (radius * 2));
+        uvs[vi * 2 + 1] = 0.5 + (vz / (radius * 2));
+        vi++;
+      }
+    }
+    for (let s = 0; s < segs; s++) {
+      const next = (s + 1) % segs;
+      idx.push(0, 1 + next, 1 + s);
+    }
+    for (let r = 1; r < rings; r++) {
+      const rowA = 1 + (r - 1) * segs;
+      const rowB = 1 + r * segs;
+      for (let s = 0; s < segs; s++) {
+        const next = (s + 1) % segs;
+        idx.push(rowA + s, rowA + next, rowB + s);
+        idx.push(rowA + next, rowB + next, rowB + s);
+      }
+    }
+
+    const lakeGeo = new THREE.BufferGeometry();
+    lakeGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    lakeGeo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    lakeGeo.setIndex(idx);
+    lakeGeo.computeVertexNormals();
+
+    const lakeMat = new THREE.MeshStandardMaterial({
+      color: 0x0b5f6e,
+      roughness: 0.08,
+      metalness: 0.8,
+      normalMap: waterNormalTex,
+      normalScale: new THREE.Vector2(0.32, 0.32),
+      envMapIntensity: 1.55,
+      transparent: true,
+      opacity: 0.78,
+    });
+
+    lakeMesh = new THREE.Mesh(lakeGeo, lakeMat);
+    lakeMesh.position.set(0, 0.16, 156);
+    lakeMesh.receiveShadow = true;
+    lakeMesh.userData.waterNormalTex = waterNormalTex;
+    lakeMesh.userData.radius = radius;
+    scene.add(lakeMesh);
+  })();
+
+  // Деревянный мостик на пляже из досок Planks039_1K-JPG + трамплин на конце пирса!
   (function createPier() {
-    const pierMat = new THREE.MeshStandardMaterial({ map: makeWoodWallTex('#9c6334', '#573316', '#ba7a45', 2, 6), roughness: 0.82 });
-    const postMat = stdMat(0x5c3618, 0.88);
-    const pier = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.35, 22), pierMat);
+    const pierDeckMat = loadPBRMaterial('Planks039_1K-JPG', 2, 8, {
+      fallbackMap: texCrate,
+      fallbackRoughness: 0.85,
+      roughness: 0.84,
+      metalness: 0.04,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.72,
+    });
+    const pierPostMat = loadPBRMaterial('Planks039_1K-JPG', 1, 2, {
+      fallbackMap: texCrate,
+      fallbackRoughness: 0.88,
+      roughness: 0.88,
+      metalness: 0.04,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.65,
+    });
+    const pier = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.35, 22), pierDeckMat);
     pier.position.set(0, 0.65, 134); pier.castShadow = true; pier.receiveShadow = true;
     scene.add(pier);
 
     for (let z = 124; z <= 144; z += 5) {
       for (const sx of [-1.9, 1.9]) {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 1.4, 8), postMat);
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 1.4, 8), pierPostMat);
         post.position.set(sx, 0.55, z); post.castShadow = true;
         scene.add(post);
       }
@@ -3149,12 +3352,15 @@ function buildWorld() {
   // БИОМ 5: ЗАПАД (-140, 0) — ХОЛМИСТЫЙ ЛЕС И СВИНСКИЙ СКЕЙТ-ПАРК
   // ==========================================================================
   noTreeZones.push({ x: -140, z: 0, r: 44 });
-  const skateConcreteMat = loadPBRMaterial('Concrete049_1K-JPG', 9, 8, {
+  const skateConcreteMat = loadPBRMaterial('Concrete042C_1K-JPG', 10, 9, {
     fallbackMap: texConcrete,
     fallbackRoughness: 0.78,
-    roughness: 0.86,
-    useNormal: false,
-    useRoughness: false,
+    roughness: 0.80,
+    metalness: 0.05,
+    envMapIntensity: 1.2,
+    useNormal: true,
+    useRoughness: true,
+    normalScale: 0.60,
   });
   const skatePad = new THREE.Mesh(
     new THREE.BoxGeometry(62, 0.08, 56),
@@ -3163,23 +3369,23 @@ function buildWorld() {
   skatePad.position.set(-140, 0.02, 0); skatePad.receiveShadow = true;
   scene.add(skatePad);
 
-  // Огромная свинская полутруба (Half-Pipe) для сальто! (-144, 0)
+  // Огромная свинская полутруба (Half-Pipe) из бетона Concrete042C с металлическими бортиками Metal041B! (-144, 0)
   (function createHalfPipe() {
     const cx = -144, cz = 0;
     const width = 18;
     const segments = 10;
     const radius = 11.5;
-    const deckMat = new THREE.MeshStandardMaterial({ map: makeWoodWallTex('#d99b52', '#8f5d24', '#f0b66e', 3, 2), roughness: 0.45 });
-    const railMat = stdMat(0xe84838, 0.35, 0.4);
+    const deckMat = skateRampConcreteMat;
+    const railMat = skateRailMetalMat;
 
-    // Бортики безопасности по краям полутрубы
+    // Металлические бортики безопасности по краям полутрубы (Metal041B)
     for (const sz of [-width / 2 - 0.3, width / 2 + 0.3]) {
       const wall = new THREE.Mesh(new THREE.BoxGeometry(22, 6.8, 0.4), railMat);
-      wall.position.set(cx, 3.4, cz + sz); wall.castShadow = true;
+      wall.position.set(cx, 3.4, cz + sz); wall.castShadow = true; wall.receiveShadow = true;
       scene.add(wall);
     }
 
-    // Сегменты дуги полутрубы (гладкий съезд и вылет вверх с обеих сторон)
+    // Бетонные сегменты дуги полутрубы (Concrete042C)
     for (let i = 0; i < segments; i++) {
       const t = (i + 0.5) / segments; // 0..1
       const theta = (t - 0.5) * Math.PI * 0.86; // от -77° до +77°
@@ -3199,14 +3405,23 @@ function buildWorld() {
       world.addBody(b);
     }
 
+    // Металлические трубы-коупинги на верхних кромках полутрубы
+    for (const side of [-1, 1]) {
+      const coping = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, width + 0.6, 12), railMat);
+      coping.rotation.x = Math.PI / 2;
+      coping.position.set(cx + side * (radius * Math.sin(Math.PI * 0.43)), radius - radius * Math.cos(Math.PI * 0.43) + 0.35, cz);
+      coping.castShadow = true;
+      scene.add(coping);
+    }
+
     // Батуты на вылетах полутрубы для космических сальто!
     createTrampoline(cx - 12.2, cz, 2.4, 23.0, 5.2);
     createTrampoline(cx + 12.2, cz, 2.4, 23.0, 5.2);
   })();
 
-  // Крутые скейт-горки сбоку от полутрубы + морской контейнер для трюков и лесные домики
-  createRamp(-136, -18,  Math.PI / 2, 6.0, 9.5, 0.40);
-  createRamp(-136,  18, -Math.PI / 2, 6.0, 9.5, 0.40);
+  // Крутые бетонные скейт-рампы с металлическими бортиками сбоку от полутрубы
+  createRamp(-136, -18,  Math.PI / 2, 6.0, 9.5, 0.40, 0, true);
+  createRamp(-136,  18, -Math.PI / 2, 6.0, 9.5, 0.40, 0, true);
   placeKenneyModel({
     filename: 'shipping-container-a.glb',
     x: -124,
@@ -3911,20 +4126,41 @@ function loadNormalizedGltfTemplate(filename, targetSize = 1.0, scaleMode = 'hei
             obj.castShadow = isBush ? !isMobile : true;
             obj.receiveShadow = !isBush;
             const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-            for (const m of mats) {
-              if (!m) continue;
-              if (m.map) setSRGBTex(m.map);
-              if (isBush) {
-                m.side = THREE.DoubleSide;
-                if (m.transparent || m.alphaMap) {
-                  m.alphaTest = 0.35;
-                  m.transparent = false;
-                  m.depthWrite = true;
-                }
+            const fixedMats = mats.map((origM) => {
+              if (!origM) return origM;
+              if (!isBush) {
+                if (origM.map) setSRGBTex(origM.map);
+                if ('envMapIntensity' in origM) origM.envMapIntensity = 1.15;
+                origM.needsUpdate = true;
+                return origM;
               }
-              if ('envMapIntensity' in m) m.envMapIntensity = 1.15;
+              // Исправляем чёрные кусты (wild_rooibos_bush и кусты у дороги):
+              // alphaTest: 0.5, side: THREE.DoubleSide, живой зелёный цвет листвы без тёмных карт
+              const m = origM.clone();
+              const mName = `${obj.name || ''} ${m.name || ''}`.toLowerCase();
+              const isBark = /bark|wood|trunk|stem|branch/.test(mName) && !/leaf|leaves|foliage|bush/.test(mName);
+              if (m.map) setSRGBTex(m.map);
+              m.side = THREE.DoubleSide;
+              m.alphaTest = 0.5;
+              m.transparent = false;
+              m.depthWrite = true;
+              m.normalMap = null;
+              m.aoMap = null;
+              m.metalnessMap = null;
+              m.roughnessMap = null;
+              m.vertexColors = false;
+              if (m.color) m.color.setHex(isBark ? 0x7c5d43 : 0x5da844);
+              if (m.emissive) {
+                m.emissive.setHex(isBark ? 0x120d08 : 0x183012);
+                m.emissiveIntensity = 0.24;
+              }
+              if ('roughness' in m) m.roughness = 0.82;
+              if ('metalness' in m) m.metalness = 0.0;
+              if ('envMapIntensity' in m) m.envMapIntensity = 1.05;
               m.needsUpdate = true;
-            }
+              return m;
+            });
+            obj.material = Array.isArray(obj.material) ? fixedMats : fixedMats[0];
           });
 
           resolve({ template: wrapper, size: finalSize });
@@ -5157,7 +5393,7 @@ function toggleStickySnout() {
   grabbedObj.body.wakeUp();
   sfx.slurp();
   btnSnout.classList.add('active-mode');
-  btnSnout.innerHTML = `${ICONS.snout}<span>БРОСИТЬ</span>`;
+  btnSnout.setAttribute('aria-pressed', 'true');
   grabBadge.style.display = 'inline-flex';
   grabBadge.innerHTML = `${ICONS.snout}<span>Схвачено: ${grabbedObj.name} — нажми БОДНУТЬ</span>`;
   addTrick(`Липкий пятак: ${grabbedObj.name}`, 75, grabbedObj.body.position, '#ff8cc8');
@@ -5172,7 +5408,7 @@ function releaseGrabbed(playSfx = true) {
   grabbedObj = null;
   tongueMesh.visible = false;
   btnSnout.classList.remove('active-mode');
-  btnSnout.innerHTML = `${ICONS.snout}<span>ПЯТАК</span>`;
+  btnSnout.setAttribute('aria-pressed', 'false');
   grabBadge.style.display = 'none';
   if (playSfx) sfx.release();
 }
@@ -5237,7 +5473,7 @@ function toggleRagdoll() {
 
     sfx.flop();
     btnRagdoll.classList.add('active-mode');
-    btnRagdoll.innerHTML = `${ICONS.pig}<span>ВСТАТЬ</span>`;
+    btnRagdoll.setAttribute('aria-pressed', 'true');
     spawnFloatText(playerBody.position, 'ОБМЯК!', '#ffd970');
   } else {
     isRagdoll = false;
@@ -5251,7 +5487,7 @@ function toggleRagdoll() {
 
     sfx.jump();
     btnRagdoll.classList.remove('active-mode');
-    btnRagdoll.innerHTML = `${ICONS.dizzy}<span>РЭГДОЛЛ</span>`;
+    btnRagdoll.setAttribute('aria-pressed', 'false');
   }
 }
 
@@ -5559,6 +5795,28 @@ function updateWorldMechanics(dt) {
     }
   }
 
+  // Плавная анимация волн и бегущей ряби на воде озера
+  if (lakeMesh) {
+    const wNorm = lakeMesh.userData && lakeMesh.userData.waterNormalTex;
+    if (wNorm) {
+      wNorm.offset.x = (elapsedTime * 0.032) % 1;
+      wNorm.offset.y = (elapsedTime * 0.022) % 1;
+    }
+    const posAttr = lakeMesh.geometry && lakeMesh.geometry.attributes && lakeMesh.geometry.attributes.position;
+    if (posAttr) {
+      const maxR = (lakeMesh.userData && lakeMesh.userData.radius) || 32;
+      const tW = elapsedTime * 1.9;
+      for (let i = 0; i < posAttr.count; i++) {
+        const vx = posAttr.getX(i);
+        const vz = posAttr.getZ(i);
+        const edgeFade = Math.max(0, 1 - Math.hypot(vx, vz) / maxR);
+        const wave = (Math.sin(vx * 0.24 + tW) + Math.cos(vz * 0.22 - tW * 0.85)) * 0.065 * edgeFade;
+        posAttr.setY(i, wave);
+      }
+      posAttr.needsUpdate = true;
+    }
+  }
+
   // Плеск в озере на Юге
   if (waterSplashCooldown > 0) waterSplashCooldown -= dt;
   const p = inTractor ? tractor.body.position : playerBody.position;
@@ -5794,6 +6052,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyF') doHeadbutt();
   if (e.code === 'KeyT') toggleTractor();
   if (e.code === 'KeyV') toggleCameraMode();
+  if (e.code === 'KeyH') toggleHudVisibility();
   // Смена породы (KeyC) временно отключена до добавления новых 3D-моделей
 });
 window.addEventListener('keyup', (e) => {
@@ -6038,7 +6297,65 @@ bindTouchBtn(btnSnout, toggleStickySnout);
 bindTouchBtn(btnRagdoll, toggleRagdoll);
 bindTouchBtn(btnTrHorn, doTractorHorn);
 
-document.getElementById('rotate-tip').addEventListener('click', function () { this.style.display = 'none'; });
+// Полноэкранный режим по первому касанию экрана
+let fullscreenRequestedOnce = false;
+function requestGameFullscreen() {
+  if (fullscreenRequestedOnce || document.fullscreenElement || document.webkitFullscreenElement) return;
+  fullscreenRequestedOnce = true;
+  const el = document.documentElement;
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+  if (typeof fn === 'function') {
+    try {
+      const res = fn.call(el);
+      if (res && typeof res.catch === 'function') res.catch(() => {});
+    } catch (_) {}
+  }
+}
+window.addEventListener('touchstart', requestGameFullscreen, { once: true, passive: true });
+window.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch' || isMobile) requestGameFullscreen();
+}, { once: true, passive: true });
+
+// Автоматическое скрытие плашки «Поверните телефон горизонтально», когда экран уже горизонтальный
+const rotateTipEl = document.getElementById('rotate-tip');
+let rotateTipDismissed = false;
+function updateRotateTip() {
+  if (!rotateTipEl) return;
+  const isLandscape = window.innerWidth > window.innerHeight;
+  if (isLandscape || rotateTipDismissed || !isMobile) {
+    rotateTipEl.style.display = 'none';
+  } else {
+    rotateTipEl.style.display = 'flex';
+  }
+}
+if (rotateTipEl) {
+  rotateTipEl.addEventListener('click', () => {
+    rotateTipDismissed = true;
+    rotateTipEl.style.display = 'none';
+  });
+}
+updateRotateTip();
+window.addEventListener('resize', updateRotateTip);
+window.addEventListener('orientationchange', () => setTimeout(updateRotateTip, 120));
+
+// Кнопка-глаз для скрытия/возврата всего интерфейса (чистая запись видео для трейлера)
+const btnHideHud = document.getElementById('btn-hide-hud');
+let hudHidden = false;
+function toggleHudVisibility() {
+  hudHidden = !hudHidden;
+  document.body.classList.toggle('hud-hidden', hudHidden);
+  if (btnHideHud) {
+    btnHideHud.classList.toggle('active', hudHidden);
+    btnHideHud.setAttribute('aria-pressed', String(hudHidden));
+    btnHideHud.title = hudHidden ? 'Показать интерфейс' : 'Скрыть интерфейс (съёмка)';
+  }
+}
+if (btnHideHud) {
+  btnHideHud.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleHudVisibility();
+  });
+}
 
 // ----------------------------------------------------------------------------
 // 13. ГЛАВНЫЙ ЦИКЛ (С ОПТИМИЗАЦИЕЙ ПРОПСОВ И ТЕНЕЙ В МИРЕ 500x500)
@@ -6342,7 +6659,7 @@ camera.lookAt(smoothLookAt);
 function updateCamera(dt) {
   const ref = inTractor ? tractor.visual.position : playerBody.position;
   // Двигаем купол неба и солнце за игроком по карте 500x500, чтобы тени оставались чёткими в любом биоме!
-  skyDome.position.set(ref.x, 0, ref.z);
+  if (skyDome.visible) skyDome.position.set(ref.x, 0, ref.z);
   sun.position.set(ref.x + sunDir.x * 95, sunDir.y * 95, ref.z + sunDir.z * 95);
   sun.target.position.set(ref.x, 0, ref.z);
 
