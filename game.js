@@ -450,6 +450,34 @@ const skyMat = new THREE.ShaderMaterial({
 const skyDome = new THREE.Mesh(new THREE.SphereGeometry(320, 24, 16), skyMat);
 scene.add(skyDome);
 
+// Лёгкая процедурная карта окружения (PMREM) — обеспечивает реальную работу envMapIntensity и отражения на стёклах
+(function setupDaylightEnvMap() {
+  try {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 64;
+    const ctx = c.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, 64);
+    grad.addColorStop(0.00, '#62b6ff');
+    grad.addColorStop(0.38, '#b8e3ff');
+    grad.addColorStop(0.50, '#fff4dc');
+    grad.addColorStop(0.62, '#c8d9b8');
+    grad.addColorStop(1.00, '#7ea86b');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 64);
+    const envTex = new THREE.CanvasTexture(c);
+    envTex.mapping = THREE.EquirectangularReflectionMapping;
+    setSRGBTex(envTex);
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    scene.environment = pmrem.fromEquirectangular(envTex).texture;
+    envTex.dispose();
+    pmrem.dispose();
+  } catch (err) {
+    console.warn('Процедурная карта окружения пропущена:', err);
+  }
+})();
+
 scene.add(new THREE.HemisphereLight(0xdff3ff, 0x4d7334, 0.9));
 const sun = new THREE.DirectionalLight(0xfff2d6, 1.35);
 sun.position.copy(sunDir).multiplyScalar(95);
@@ -884,6 +912,7 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     fallbackRoughness = 0.90,
     roughness = 0.92,
     metalness = 0.0,
+    envMapIntensity = 1.0,
     useNormal = false,
     useRoughness = false,
     useMetalness = false,
@@ -892,7 +921,7 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     side = THREE.FrontSide,
   } = options;
 
-  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${metalness}|${useNormal}|${useRoughness}|${useMetalness}|${normalScale}|${color}|${side}`;
+  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${metalness}|${envMapIntensity}|${useNormal}|${useRoughness}|${useMetalness}|${normalScale}|${color}|${side}`;
   if (pbrMaterialCache.has(key)) return pbrMaterialCache.get(key);
 
   const mat = new THREE.MeshStandardMaterial({
@@ -900,6 +929,7 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     map: fallbackMap || null,
     roughness: fallbackRoughness,
     metalness: useMetalness ? Math.max(0.5, metalness) : metalness,
+    envMapIntensity,
     side,
   });
   pbrMaterialCache.set(key, mat);
@@ -954,40 +984,50 @@ let worldPBRCache = null;
 function getWorldPBRMaterials() {
   if (worldPBRCache) return worldPBRCache;
   worldPBRCache = {
-    // Красный кирпич (Bricks085)
+    // Кирпичные стены домов (Bricks085): светлые и чёткие, не уходят в чёрный в тени
     bricks: loadPBRMaterial('Bricks085_1K-JPG', 2.2, 2.2, {
       fallbackMap: texPlaza,
-      fallbackRoughness: 0.88,
-      roughness: 0.88,
-      color: 0xd98677,
+      fallbackRoughness: 0.75,
+      roughness: 0.75,
+      metalness: 0.05,
+      envMapIntensity: 1.5,
+      color: 0xffffff,
       useNormal: true,
       useRoughness: true,
       normalScale: 0.78,
     }),
-    // Светлая штукатурка
+    // Светлая штукатурка стен домов
     plasterLight: loadPBRMaterial('Concrete042C_1K-JPG', 1.8, 1.8, {
       fallbackMap: texPlaza,
-      fallbackRoughness: 0.88,
-      roughness: 0.90,
-      color: 0xf7efe0,
+      fallbackRoughness: 0.75,
+      roughness: 0.75,
+      metalness: 0.05,
+      envMapIntensity: 1.5,
+      color: 0xffffff,
       useNormal: true,
       useRoughness: true,
       normalScale: 0.34,
     }),
-    // Архитектурный бетон (Concrete042C)
+    // Бетонные стены домов (Concrete042C)
     concrete: loadPBRMaterial('Concrete042C_1K-JPG', 1.6, 1.6, {
       fallbackMap: texConcrete,
-      fallbackRoughness: 0.90,
-      roughness: 0.92,
-      color: 0xcbd0d6,
+      fallbackRoughness: 0.75,
+      roughness: 0.75,
+      metalness: 0.05,
+      envMapIntensity: 1.5,
+      color: 0xffffff,
       useNormal: true,
       useRoughness: true,
       normalScale: 0.65,
     }),
+    // Водонапорная башня (Concrete042C)
     concreteTower: loadPBRMaterial('Concrete042C_1K-JPG', 2, 3, {
       fallbackMap: texConcrete,
-      fallbackRoughness: 0.90,
-      roughness: 0.90,
+      fallbackRoughness: 0.75,
+      roughness: 0.75,
+      metalness: 0.05,
+      envMapIntensity: 1.5,
+      color: 0xffffff,
       useNormal: true,
       useRoughness: true,
       normalScale: 0.65,
@@ -1026,13 +1066,35 @@ function getWorldPBRMaterials() {
       useRoughness: true,
       normalScale: 0.62,
     }),
-    // Глянцевое тёмно-голубое стекло с отражением (roughness: 0.1, metalness: 0.8)
+    // Светло-голубое глянцевое стекло с подсветкой и отражением (emissive: 0x335577, emissiveIntensity: 0.4, roughness: 0.1)
     glassWindow: new THREE.MeshStandardMaterial({
-      color: 0x164166,
-      emissive: new THREE.Color(0x071a2b),
-      emissiveIntensity: 0.25,
+      color: 0x7fd4ff,
+      emissive: new THREE.Color(0x335577),
+      emissiveIntensity: 0.4,
       roughness: 0.1,
-      metalness: 0.8,
+      metalness: 0.35,
+      envMapIntensity: 1.4,
+    }),
+    // Тёплое жилое стекло для оживления окон на домах
+    warmGlassWindow: new THREE.MeshStandardMaterial({
+      color: 0xffe49e,
+      emissive: new THREE.Color(0x335577),
+      emissiveIntensity: 0.4,
+      roughness: 0.1,
+      metalness: 0.25,
+      envMapIntensity: 1.25,
+    }),
+    // Контрастные светлые оконные рамы и подоконники
+    windowFrame: new THREE.MeshStandardMaterial({
+      color: 0xf7f1e3,
+      roughness: 0.55,
+      metalness: 0.05,
+      envMapIntensity: 1.2,
+    }),
+    windowMullion: new THREE.MeshStandardMaterial({
+      color: 0x3b302a,
+      roughness: 0.65,
+      metalness: 0.08,
     }),
     metalContainer(tintHex = 0xffffff) {
       return loadPBRMaterial('Metal041B_1K-JPG', 2, 2, {
@@ -1297,6 +1359,126 @@ function splitMergedHouseMesh(mesh, rootInverseMatrix, buildingHeight, wallMat, 
 }
 
 // Заменяет мультяшные материалы на реалистичные PBR-текстуры, сохраняя окна, рамы и двери
+// Добавляет на стены домов контрастные оконные рамы со светло-голубыми/тёплыми стёклами,
+// автоматически прижимая их к реальной плоскости стен (под свесами крыши)
+function addContrastingWindowsToHouse(innerRoot, finalSize, houseSeed = 0) {
+  const pbr = getWorldPBRMaterials();
+  innerRoot.updateMatrixWorld(true);
+  const invRoot = new THREE.Matrix4().copy(innerRoot.matrixWorld).invert();
+
+  const h = Math.max(3.0, finalSize.y);
+  let wallMinX = Infinity, wallMaxX = -Infinity;
+  let wallMinZ = Infinity, wallMaxZ = -Infinity;
+  const p = new THREE.Vector3();
+
+  // Находим реальный контур стен ниже свесов крыши (14%..50% высоты здания)
+  innerRoot.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry || !obj.geometry.attributes || !obj.geometry.attributes.position) return;
+    const relMat = new THREE.Matrix4().multiplyMatrices(invRoot, obj.matrixWorld);
+    const posAttr = obj.geometry.attributes.position;
+    const step = Math.max(1, Math.floor(posAttr.count / 600));
+    for (let i = 0; i < posAttr.count; i += step) {
+      p.fromBufferAttribute(posAttr, i).applyMatrix4(relMat);
+      if (p.y >= h * 0.14 && p.y <= h * 0.50) {
+        if (p.x < wallMinX) wallMinX = p.x;
+        if (p.x > wallMaxX) wallMaxX = p.x;
+        if (p.z < wallMinZ) wallMinZ = p.z;
+        if (p.z > wallMaxZ) wallMaxZ = p.z;
+      }
+    }
+  });
+
+  if (!Number.isFinite(wallMinX) || (wallMaxX - wallMinX) < 1.5) {
+    wallMinX = -finalSize.x * 0.46;
+    wallMaxX = finalSize.x * 0.46;
+  }
+  if (!Number.isFinite(wallMinZ) || (wallMaxZ - wallMinZ) < 1.5) {
+    wallMinZ = -finalSize.z * 0.46;
+    wallMaxZ = finalSize.z * 0.46;
+  }
+
+  const wallW = Math.max(3.2, wallMaxX - wallMinX);
+  const wallDep = Math.max(3.2, wallMaxZ - wallMinZ);
+  const wallCx = (wallMinX + wallMaxX) * 0.5;
+  const wallCz = (wallMinZ + wallMaxZ) * 0.5;
+
+  const winW = Math.min(1.55, Math.max(0.95, Math.min(wallW, wallDep) * 0.17));
+  const winH = Math.min(1.50, Math.max(0.95, h * 0.20));
+  const frameThick = 0.13;
+  const frameDepth = 0.18;
+  const paneDepth = 0.10;
+
+  const floorsY = h >= 7.6
+    ? [Math.max(1.55, h * 0.25), Math.min(h * 0.56, h * 0.25 + winH + 1.35)]
+    : [Math.min(h * 0.42, Math.max(1.45, h * 0.30))];
+
+  const winGroup = new THREE.Group();
+  winGroup.name = 'house_contrasting_windows';
+
+  function makeSingleWindow(warm) {
+    const wg = new THREE.Group();
+    const glassMat = warm ? pbr.warmGlassWindow : pbr.glassWindow;
+    const frameMat = pbr.windowFrame;
+    const mullionMat = pbr.windowMullion;
+
+    const topBar = new THREE.Mesh(new THREE.BoxGeometry(winW + frameThick * 2, frameThick, frameDepth), frameMat);
+    topBar.position.y = winH * 0.5 + frameThick * 0.5;
+    const botBar = new THREE.Mesh(new THREE.BoxGeometry(winW + frameThick * 2.4, frameThick * 1.25, frameDepth + 0.08), frameMat);
+    botBar.position.set(0, -winH * 0.5 - frameThick * 0.5, 0.03);
+    const leftBar = new THREE.Mesh(new THREE.BoxGeometry(frameThick, winH, frameDepth), frameMat);
+    leftBar.position.x = -winW * 0.5 - frameThick * 0.5;
+    const rightBar = new THREE.Mesh(new THREE.BoxGeometry(frameThick, winH, frameDepth), frameMat);
+    rightBar.position.x = winW * 0.5 + frameThick * 0.5;
+
+    // Контрастный крестовой переплёт рамы
+    const vMullion = new THREE.Mesh(new THREE.BoxGeometry(0.07, winH, paneDepth + 0.04), mullionMat);
+    const hMullion = new THREE.Mesh(new THREE.BoxGeometry(winW, 0.07, paneDepth + 0.04), mullionMat);
+    hMullion.position.y = winH * 0.12;
+
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(winW, winH, paneDepth), glassMat);
+    pane.position.z = -0.01;
+
+    wg.add(topBar, botBar, leftBar, rightBar, vMullion, hMullion, pane);
+    wg.traverse((o) => {
+      if (o.isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+      }
+    });
+    return wg;
+  }
+
+  const frontCols = wallW >= 7.4 ? [wallCx - wallW * 0.25, wallCx + wallW * 0.25] : [wallCx];
+  const sideCols = wallDep >= 7.4 ? [wallCz - wallDep * 0.25, wallCz + wallDep * 0.25] : [wallCz];
+  let idx = 0;
+
+  for (const wy of floorsY) {
+    for (const cx of frontCols) {
+      const wFront = makeSingleWindow(((houseSeed + idx++) % 3) === 0);
+      wFront.position.set(cx, wy, wallMaxZ + 0.02);
+      winGroup.add(wFront);
+
+      const wBack = makeSingleWindow(((houseSeed + idx++) % 3) === 1);
+      wBack.position.set(cx, wy, wallMinZ - 0.02);
+      wBack.rotation.y = Math.PI;
+      winGroup.add(wBack);
+    }
+    for (const cz of sideCols) {
+      const wRight = makeSingleWindow(((houseSeed + idx++) % 3) === 0);
+      wRight.position.set(wallMaxX + 0.02, wy, cz);
+      wRight.rotation.y = Math.PI / 2;
+      winGroup.add(wRight);
+
+      const wLeft = makeSingleWindow(((houseSeed + idx++) % 3) === 1);
+      wLeft.position.set(wallMinX - 0.02, wy, cz);
+      wLeft.rotation.y = -Math.PI / 2;
+      winGroup.add(wLeft);
+    }
+  }
+
+  innerRoot.add(winGroup);
+}
+
 function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) {
   const pbr = getWorldPBRMaterials();
   innerRoot.updateMatrixWorld(true);
@@ -1370,6 +1552,7 @@ function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) 
       pbr.planksWindmill,
       hasWoodInserts
     );
+    addContrastingWindowsToHouse(innerRoot, finalSize, Math.round(finalSize.x * 11 + finalSize.z * 5));
     return;
   }
 
@@ -1438,6 +1621,8 @@ function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) 
       m.material = pickHouseMaterial(m.material, m.name, mBox, avgNy);
     }
   }
+
+  addContrastingWindowsToHouse(innerRoot, finalSize, Math.round(finalSize.x * 13 + finalSize.z * 7));
 }
 
 // ----------------------------------------------------------------------------
@@ -3713,7 +3898,7 @@ function buildTractor(startX, startZ) {
 
   const driverSeat = new THREE.Group();
   driverSeat.position.set(0, 0.45, -0.72);
-  const driverPig = createPigModel(PIG_TYPES.MEME, { scale: 0.85 });
+  const driverPig = createPigModel(PIG_TYPES.MEME, { scale: 0.48 });
   driverPig.userData.disposeShadow();
   driverPig.visible = false;
   driverSeat.add(driverPig);
@@ -3825,7 +4010,15 @@ const BREED_ORDER = [
   PIG_TYPES.BLACK,
 ];
 let currentBreedIdx = 0;
-let playerPig = createPigModel(BREED_ORDER[0], { scale: 1.0 });
+const PLAYER_SCALE = 0.45; // Уменьшение в ~2.2 раза: хряк по плечо легковушке / до середины кабины грузовика
+const PLAYER_SPHERE_R = 0.58 * PLAYER_SCALE;
+const PLAYER_VISUAL_Y_OFFSET = -PLAYER_SPHERE_R;
+const CAM_DIST_NORMAL = 3.4;
+const CAM_DIST_RAGDOLL = 4.2;
+const CAM_HEIGHT_OFFSET = 0.72;
+const CAM_LOOK_Y_OFFSET = 0.36;
+
+let playerPig = createPigModel(BREED_ORDER[0], { scale: PLAYER_SCALE });
 scene.add(playerPig);
 
 const playerBody = new CANNON.Body({
@@ -3836,7 +4029,7 @@ const playerBody = new CANNON.Body({
   angularDamping: 0.25,
   position: new CANNON.Vec3(0, 1.5, 11),
 });
-playerBody.addShape(new CANNON.Sphere(0.58));
+playerBody.addShape(new CANNON.Sphere(PLAYER_SPHERE_R));
 playerBody.allowSleep = false;
 world.addBody(playerBody);
 
@@ -4000,10 +4193,11 @@ function updateStickySnout() {
 
   const aim = getAimDirection();
   const fwd = new THREE.Vector3(aim.x, Math.max(-0.2, Math.min(0.45, aim.y)), aim.z).normalize();
+  const holdDist = grabbedObj.kind === 'vehicle' ? 2.55 : 1.42;
   const target = new THREE.Vector3(
-    playerBody.position.x + fwd.x * 2.05,
-    Math.max(0.75, playerBody.position.y + 0.38 + fwd.y * 1.2),
-    playerBody.position.z + fwd.z * 2.05
+    playerBody.position.x + fwd.x * holdDist,
+    Math.max(0.55, playerBody.position.y + 0.24 + fwd.y * 0.85),
+    playerBody.position.z + fwd.z * holdDist
   );
 
   const ob = grabbedObj.body;
@@ -4025,7 +4219,7 @@ function updateStickySnout() {
   if (len > 0.05) {
     tongueMesh.visible = true;
     tongueMesh.position.copy(snoutWorld).addScaledVector(diff, 0.5);
-    tongueMesh.scale.set(1, len, 1);
+    tongueMesh.scale.set(PLAYER_SCALE, len, PLAYER_SCALE);
     tongueMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), diff.normalize());
   }
 }
@@ -4057,7 +4251,7 @@ function toggleRagdoll() {
     playerBody.angularVelocity.set(0, 0, 0);
     playerBody.quaternion.set(0, 0, 0, 1);
     playerBody.updateMassProperties();
-    playerBody.position.y += 0.25;
+    playerBody.position.y += 0.16;
     playerBody.velocity.y = Math.max(playerBody.velocity.y, 4.2);
 
     sfx.jump();
@@ -4762,7 +4956,7 @@ function triggerJump() {
     playerBody.velocity.y = 11.8;
     playerLastGrounded = -10;
     sfx.jump();
-    spawnBurst(new THREE.Vector3(playerBody.position.x, playerBody.position.y - 0.5, playerBody.position.z), 0xeff7dc, 6, 4);
+    spawnBurst(new THREE.Vector3(playerBody.position.x, Math.max(0.04, playerBody.position.y - PLAYER_SPHERE_R), playerBody.position.z), 0xeff7dc, 6, 3.2, 0.65);
   }
 }
 
@@ -4874,7 +5068,7 @@ function updatePlayer(dt, input) {
       playerPig.userData.triggerLand(landStrength);
     }
     if (landStrength > 0.55) {
-      spawnBurst(new THREE.Vector3(playerBody.position.x, playerBody.position.y - 0.5, playerBody.position.z), 0xeff7dc, 5, 3.8, 0.85);
+      spawnBurst(new THREE.Vector3(playerBody.position.x, Math.max(0.04, playerBody.position.y - PLAYER_SPHERE_R), playerBody.position.z), 0xeff7dc, 5, 3.0, 0.58);
     }
   }
   playerWasGrounded = grounded;
@@ -4890,7 +5084,7 @@ function updatePlayer(dt, input) {
   }
   const p = playerBody.position;
   onSlideNow = slideZone && p.x > slideZone.xMin && p.x < slideZone.xMax &&
-               Math.abs(p.z - slideZone.zCenter) < slideZone.halfW && p.y > 0.9 && p.y < 10.5;
+               Math.abs(p.z - slideZone.zCenter) < slideZone.halfW && p.y > 0.45 && p.y < 10.5;
   if (slideTrickCooldown > 0) slideTrickCooldown -= dt;
   if (onSlideNow) {
     playerBody.velocity.x += 12 * dt;
@@ -4959,7 +5153,7 @@ function updatePlayer(dt, input) {
       playerYaw = lerpAngle(playerYaw, targetYaw, turnRate);
     }
 
-    playerPig.position.set(p.x, p.y - 0.58, p.z);
+    playerPig.position.set(p.x, p.y + PLAYER_VISUAL_Y_OFFSET, p.z);
     playerPig.rotation.set(0, playerYaw, 0);
 
     const horizSpeed = Math.hypot(playerBody.velocity.x, playerBody.velocity.z);
@@ -4977,16 +5171,16 @@ function updatePlayer(dt, input) {
       if (hoofDustStepTimer <= 0) {
         hoofDustStepTimer = 0.24;
         hoofDustSide *= -1;
-        const sideX = Math.cos(playerYaw) * 0.34 * hoofDustSide;
-        const sideZ = -Math.sin(playerYaw) * 0.34 * hoofDustSide;
-        const backX = -Math.sin(playerYaw) * 0.42;
-        const backZ = -Math.cos(playerYaw) * 0.42;
+        const sideX = Math.cos(playerYaw) * (0.34 * PLAYER_SCALE) * hoofDustSide;
+        const sideZ = -Math.sin(playerYaw) * (0.34 * PLAYER_SCALE) * hoofDustSide;
+        const backX = -Math.sin(playerYaw) * (0.42 * PLAYER_SCALE);
+        const backZ = -Math.cos(playerYaw) * (0.42 * PLAYER_SCALE);
         spawnBurst(
-          new THREE.Vector3(p.x + sideX + backX, 0.05, p.z + sideZ + backZ),
+          new THREE.Vector3(p.x + sideX + backX, 0.04, p.z + sideZ + backZ),
           0xd8cfb8,
           2,
-          2.1,
-          0.52
+          1.8,
+          0.36
         );
       }
     } else {
@@ -5114,18 +5308,18 @@ function updateTractor(dt, input) {
   tractor.visual.quaternion.copy(b.quaternion);
 }
 
-const startDist = 6.4;
+const startDist = CAM_DIST_NORMAL;
 const smoothCamPos = new THREE.Vector3(
   playerBody.position.x + Math.sin(camYaw) * Math.cos(camPitch) * startDist,
-  playerBody.position.y + 1.35 + Math.sin(camPitch) * startDist,
+  playerBody.position.y + CAM_HEIGHT_OFFSET + Math.sin(camPitch) * startDist,
   playerBody.position.z + Math.cos(camYaw) * Math.cos(camPitch) * startDist
 );
 const smoothLookAt = new THREE.Vector3(
   playerBody.position.x,
-  playerBody.position.y + 0.65,
+  playerBody.position.y + CAM_LOOK_Y_OFFSET,
   playerBody.position.z
 );
-playerPig.position.set(playerBody.position.x, playerBody.position.y - 0.58, playerBody.position.z);
+playerPig.position.set(playerBody.position.x, playerBody.position.y + PLAYER_VISUAL_Y_OFFSET, playerBody.position.z);
 playerPig.rotation.set(0, playerYaw, 0);
 camera.position.copy(smoothCamPos);
 camera.lookAt(smoothLookAt);
@@ -5174,19 +5368,19 @@ function updateCamera(dt) {
 
   const p = playerBody.position;
   if (firstPerson) {
-    camera.position.set(p.x, p.y + 0.62, p.z);
+    camera.position.set(p.x, p.y + 0.32, p.z);
     camera.rotation.order = 'YXZ';
     camera.rotation.y = camYaw;
     camera.rotation.x = -camPitch;
     camera.rotation.z = isRagdoll ? Math.sin(elapsedTime * 8) * 0.25 : 0;
   } else {
-    const dist = isRagdoll ? 7.6 : 6.4;
+    const dist = isRagdoll ? CAM_DIST_RAGDOLL : CAM_DIST_NORMAL;
     smoothCamPos.lerp(new THREE.Vector3(
       p.x + Math.sin(camYaw) * Math.cos(camPitch) * dist,
-      Math.max(0.7, p.y + 1.35 + Math.sin(camPitch) * dist),
+      Math.max(0.45, p.y + CAM_HEIGHT_OFFSET + Math.sin(camPitch) * dist),
       p.z + Math.cos(camYaw) * Math.cos(camPitch) * dist
     ), Math.min(1, dt * 11));
-    smoothLookAt.lerp(new THREE.Vector3(p.x, p.y + 0.65, p.z), Math.min(1, dt * 14));
+    smoothLookAt.lerp(new THREE.Vector3(p.x, p.y + CAM_LOOK_Y_OFFSET, p.z), Math.min(1, dt * 14));
     camera.position.copy(smoothCamPos);
     camera.lookAt(smoothLookAt);
   }
