@@ -46,63 +46,175 @@ function setSRGB(tex) {
   else tex.encoding = THREE.sRGBEncoding;
 }
 
-// Сбор и кэширование материалов для каждой породы поверх базовой зашитой текстуры hryak.glb
-function buildCachedGlbBreedMaterials(templateRoot) {
+// Проверка, является ли меш или материал отдельной причёской/волосами
+function isHairPart(meshName, matName) {
+  const hairRe = /hair|volos|bangs|chelk|wig|mane|mohawk|cap/i;
+  return hairRe.test(meshName || '') || hairRe.test(matName || '');
+}
+
+// Плавная функция smoothstep для разделения кожи и тёмных деталей (чёлка, глаза, ноздри, копыта)
+function smoothstep(edge0, edge1, x) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+// Программное осветление встроенной текстуры hryak.glb через Canvas:
+// выравнивает тёмно-коричневую кожу в светло-розовый, оставляя чёлку, глаза, ноздри и копыта тёмными
+function buildPinkPreservingTexture(srcTex) {
+  if (!srcTex || !srcTex.image) return null;
+  try {
+    const img = srcTex.image;
+    const w = img.width || img.naturalWidth || 512;
+    const h = img.height || img.naturalHeight || 512;
+    if (!w || !h) return srcTex;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, w, h);
+    const origData = ctx.getImageData(0, 0, w, h);
+
+    // Быстрая низкочастотная карта освещения (20x20 -> w x h) для отделения запечённых теней от глаз и чёлки
+    const small = document.createElement('canvas');
+    small.width = 20;
+    small.height = 20;
+    const sCtx = small.getContext('2d');
+    sCtx.imageSmoothingEnabled = true;
+    sCtx.drawImage(canvas, 0, 0, 20, 20);
+
+    const blurCanvas = document.createElement('canvas');
+    blurCanvas.width = w;
+    blurCanvas.height = h;
+    const bCtx = blurCanvas.getContext('2d', { willReadFrequently: true });
+    bCtx.imageSmoothingEnabled = true;
+    bCtx.drawImage(small, 0, 0, w, h);
+    const lowData = bCtx.getImageData(0, 0, w, h).data;
+
+    const px = origData.data;
+    for (let i = 0; i < px.length; i += 4) {
+      const r = px[i];
+      const g = px[i + 1];
+      const b = px[i + 2];
+
+      const origLum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const lowLum = Math.max(22.0, 0.299 * lowData[i] + 0.587 * lowData[i + 1] + 0.114 * lowData[i + 2]);
+      const ratio = origLum / lowLum;
+
+      // Чёлка и копыта отсекаются по низкой абсолютной яркости, глаза и ноздри — по резкому локальному провалу
+      const absSkin = smoothstep(18.0, 38.0, origLum);
+      const relSkin = smoothstep(0.62, 0.88, ratio);
+      const skinMask = absSkin * relSkin;
+
+      // Светло-розовая кожа с сохранением рельефа складок
+      const detail = Math.max(0.58, Math.min(1.10, 0.88 + (ratio - 1.0) * 0.42));
+      const pinkR = Math.min(255, 250.0 * detail);
+      const pinkG = Math.min(255, 192.0 * detail);
+      const pinkB = Math.min(255, 186.0 * detail);
+
+      // Чёткие тёмные глаза, ноздри, чёлка и копыта
+      const featR = r * 0.92;
+      const featG = g * 0.85;
+      const featB = b * 0.85;
+
+      const inv = 1.0 - skinMask;
+      px[i]     = Math.max(0, Math.min(255, featR * inv + pinkR * skinMask));
+      px[i + 1] = Math.max(0, Math.min(255, featG * inv + pinkG * skinMask));
+      px[i + 2] = Math.max(0, Math.min(255, featB * inv + pinkB * skinMask));
+    }
+
+    ctx.putImageData(origData, 0, 0);
+
+    const outTex = new THREE.CanvasTexture(canvas);
+    outTex.flipY = srcTex.flipY; // Обязательно сохраняем flipY = false из glTF!
+    outTex.wrapS = srcTex.wrapS;
+    outTex.wrapT = srcTex.wrapT;
+    outTex.magFilter = THREE.LinearFilter;
+    outTex.minFilter = THREE.LinearMipmapLinearFilter;
+    outTex.generateMipmaps = true;
+    setSRGB(outTex);
+    outTex.needsUpdate = true;
+    return outTex;
+  } catch (err) {
+    console.warn('Не удалось обработать текстуру hryak.glb через Canvas:', err);
+    return srcTex;
+  }
+}
+
+// Сбор и кэширование материалов: осветляем кожу на текстуре в светло-розовый, сохраняя глаза, ноздри и чёлку
+function buildCachedGlbBreedMaterials(pigModel) {
   const originalMats = [];
   const matIndexMap = new Map();
 
-  templateRoot.traverse((child) => {
+  pigModel.traverse((child) => {
     if (!child.isMesh || !child.material) return;
     child.castShadow = true;
     child.receiveShadow = true;
     if (child.geometry && !child.geometry.attributes.normal) {
       child.geometry.computeVertexNormals();
     }
+
     const isArr = Array.isArray(child.material);
     const list = isArr ? child.material : [child.material];
     const converted = [];
+
     const indices = list.map((oldMat) => {
       if (!oldMat) {
         converted.push(oldMat);
         return -1;
       }
-      if (!matIndexMap.has(oldMat)) {
-        const texMap = oldMat.map || null;
-        if (texMap) {
-          if ('SRGBColorSpace' in THREE) texMap.colorSpace = THREE.SRGBColorSpace;
-          else texMap.encoding = THREE.sRGBEncoding;
-          texMap.needsUpdate = true;
+      const isHair = isHairPart(child.name, oldMat.name);
+      const cacheKey = isHair ? 'hair' : oldMat;
+
+      if (!matIndexMap.has(cacheKey)) {
+        let mat;
+        if (isHair) {
+          mat = new THREE.MeshStandardMaterial({
+            map: null,
+            color: 0x1e1614,
+            emissive: new THREE.Color(0x0a0706),
+            emissiveIntensity: 0.15,
+            roughness: 0.88,
+            metalness: 0.0,
+            side: THREE.DoubleSide,
+          });
+        } else {
+          const pinkTex = buildPinkPreservingTexture(oldMat.map);
+          mat = new THREE.MeshStandardMaterial({
+            map: pinkTex,
+            emissiveMap: pinkTex,
+            color: pinkTex ? 0xffffff : 0xf5b7b1,
+            emissive: new THREE.Color(pinkTex ? 0xffd2cc : 0x331515),
+            emissiveIntensity: 0.28,
+            roughness: 0.72,
+            metalness: 0.0,
+            side: THREE.DoubleSide,
+          });
         }
-        // Яркий MeshStandardMaterial с emissiveMap: убирает тёмный оттенок текстуры и сохраняет тени от солнца и зданий
-        const stdMat = new THREE.MeshStandardMaterial({
-          map: texMap,
-          emissiveMap: texMap,
-          color: 0xffdfd4,
-          emissive: new THREE.Color(0xffcbb8),
-          emissiveIntensity: 0.48,
-          roughness: 0.70,
-          metalness: 0.0,
-          side: THREE.DoubleSide,
-        });
-        matIndexMap.set(oldMat, originalMats.length);
-        originalMats.push(stdMat);
+        mat.userData.isHair = isHair;
+        mat.needsUpdate = true;
+
+        matIndexMap.set(cacheKey, originalMats.length);
+        originalMats.push(mat);
       }
-      const idx = matIndexMap.get(oldMat);
+
+      const idx = matIndexMap.get(cacheKey);
       converted.push(originalMats[idx]);
       return idx;
     });
+
     child.material = isArr ? converted : converted[0];
     child.userData._glbMatIndices = indices;
     child.userData._glbMatIsArray = isArr;
   });
 
   const breedTints = {
-    [PIG_TYPES.CLASSIC]: null, // Базовый MeshStandardMaterial с текстурой hryak.glb
-    [PIG_TYPES.CURLY]:   { color: 0xffe6da },
+    [PIG_TYPES.CLASSIC]: null, // Светло-розовая кожа с сохранёнными глазами, ноздрями и тёмной чёлкой
+    [PIG_TYPES.CURLY]:   { color: 0xffe6e0 },
     [PIG_TYPES.APPLE]:   { color: 0xe6453c },
     [PIG_TYPES.SPOTTED]: { color: 0xf4f6fc },
     [PIG_TYPES.BOAR]:    { color: 0xb89574 },
-    [PIG_TYPES.BLACK]:   { color: 0x626570 },
+    [PIG_TYPES.BLACK]:   { color: 0x525560 },
     [PIG_TYPES.GOLDEN]:  { color: 0xffd547, emissive: 0x5c3d00 },
   };
 
@@ -114,10 +226,13 @@ function buildCachedGlbBreedMaterials(templateRoot) {
     }
     const clonedSet = originalMats.map((orig) => {
       const m = orig.clone();
-      if (m.color && spec.color !== undefined) m.color.setHex(spec.color);
-      if (spec.metalness !== undefined && 'metalness' in m) m.metalness = spec.metalness;
-      if (spec.roughness !== undefined && 'roughness' in m) m.roughness = spec.roughness;
-      if (spec.emissive !== undefined && m.emissive) m.emissive.setHex(spec.emissive);
+      if (!orig.userData.isHair) {
+        if (m.color && spec.color !== undefined) m.color.setHex(spec.color);
+        if (spec.metalness !== undefined && 'metalness' in m) m.metalness = spec.metalness;
+        if (spec.roughness !== undefined && 'roughness' in m) m.roughness = spec.roughness;
+        if (spec.emissive !== undefined && m.emissive) m.emissive.setHex(spec.emissive);
+      }
+      m.needsUpdate = true;
       return m;
     });
     materialsByBreed.set(breedKey, clonedSet);
