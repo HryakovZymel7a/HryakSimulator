@@ -55,7 +55,7 @@ function buildCachedGlbBreedMaterials(templateRoot) {
     if (!child.isMesh || !child.material) return;
     child.castShadow = true;
     child.receiveShadow = true;
-    if (child.geometry) {
+    if (child.geometry && !child.geometry.attributes.normal) {
       child.geometry.computeVertexNormals();
     }
     const isArr = Array.isArray(child.material);
@@ -73,14 +73,15 @@ function buildCachedGlbBreedMaterials(templateRoot) {
           else texMap.encoding = THREE.sRGBEncoding;
           texMap.needsUpdate = true;
         }
-        // MeshStandardMaterial с тёплым emissive: реагирует на солнце и тени без провала в чёрный силуэт со спины
+        // Яркий MeshStandardMaterial с emissiveMap: убирает тёмный оттенок текстуры и сохраняет тени от солнца и зданий
         const stdMat = new THREE.MeshStandardMaterial({
           map: texMap,
-          color: 0xffe8de,
-          roughness: 0.72,
+          emissiveMap: texMap,
+          color: 0xffdfd4,
+          emissive: new THREE.Color(0xffcbb8),
+          emissiveIntensity: 0.48,
+          roughness: 0.70,
           metalness: 0.0,
-          emissive: new THREE.Color(0x2e1f1a),
-          emissiveIntensity: 0.35,
           side: THREE.DoubleSide,
         });
         matIndexMap.set(oldMat, originalMats.length);
@@ -209,7 +210,6 @@ export function preloadHryakModel() {
             if (!obj.isMesh || !obj.geometry) return;
             const bakedGeo = obj.geometry.clone();
             bakedGeo.applyMatrix4(obj.matrixWorld);
-            bakedGeo.computeVertexNormals();
             bakedGeo.computeBoundingBox();
             bakedGeo.computeBoundingSphere();
             const bakedMesh = new THREE.Mesh(bakedGeo, obj.material);
@@ -856,7 +856,7 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
 
       const height = Math.max(0.001, maxY - minY);
       const length = Math.max(0.001, maxZ - minZ);
-      const legYLimit = minY + height * 0.28;
+      const legYLimit = minY + height * 0.34;
       const tailZLimit = minZ + length * 0.15;
       const headZLimit = maxZ - length * 0.28;
       const vertCount = basePositions.length / 3;
@@ -874,7 +874,7 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
         const bz = basePositions[v * 3 + 2];
 
         if (by < legYLimit) {
-          legWeights[v] = (legYLimit - by) / (height * 0.28);
+          legWeights[v] = Math.pow((legYLimit - by) / (height * 0.34), 0.75);
           const isDiagA = (bx < 0 && bz > 0) || (bx > 0 && bz < 0);
           legDiag[v] = isDiagA ? 1 : -1;
           legQuad[v] = (bx >= 0 ? 1 : 0) + (bz >= 0 ? 2 : 0);
@@ -1030,37 +1030,37 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
     if (usingGlb) {
       const sinRun = Math.sin(runPhase);
       const cosRun = Math.cos(runPhase);
-      const strideAmp = 0.29 * runBlend;
-      const liftAmp = 0.14 * runBlend;
+      const strideAmp = 0.40 * runBlend;
+      const liftAmp = 0.24 * runBlend;
 
       const tailWagX = Math.sin(time * (isMovingState ? 20.0 : 5.5)) * (isMovingState ? 0.15 * runBlend : 0.035);
       const tailWagY = Math.cos(time * (isMovingState ? 20.0 : 5.5)) * (isMovingState ? 0.04 * runBlend : 0.012);
 
-      // Хаотичные частоты дёрганья для каждой из 4 лап и головы в рэгдолле (Goat Simulator)
+      // Хаотичное дёрганье кончиков лап и пятака в рэгдолле без надувания корпуса
       const rt = time;
       const ragLegX = [
-        Math.sin(rt * 27.0) * 0.24,
-        Math.sin(rt * 23.0 + 1.9) * 0.24,
-        Math.sin(rt * 31.0 + 3.7) * 0.24,
-        Math.sin(rt * 25.0 + 5.1) * 0.24,
+        Math.sin(rt * 27.0) * 0.11,
+        Math.sin(rt * 23.0 + 1.9) * 0.11,
+        Math.sin(rt * 31.0 + 3.7) * 0.11,
+        Math.sin(rt * 25.0 + 5.1) * 0.11,
       ];
       const ragLegY = [
-        Math.cos(rt * 29.0 + 0.6) * 0.19,
-        Math.cos(rt * 21.0 + 2.4) * 0.19,
-        Math.cos(rt * 26.0 + 4.1) * 0.19,
-        Math.cos(rt * 33.0 + 1.2) * 0.19,
+        Math.cos(rt * 29.0 + 0.6) * 0.10,
+        Math.cos(rt * 21.0 + 2.4) * 0.10,
+        Math.cos(rt * 26.0 + 4.1) * 0.10,
+        Math.cos(rt * 33.0 + 1.2) * 0.10,
       ];
       const ragLegZ = [
-        Math.sin(rt * 24.0 + 1.1) * 0.30,
-        Math.sin(rt * 30.0 + 3.2) * 0.30,
-        Math.sin(rt * 22.0 + 5.0) * 0.30,
-        Math.sin(rt * 28.0 + 0.4) * 0.30,
+        Math.sin(rt * 24.0 + 1.1) * 0.13,
+        Math.sin(rt * 30.0 + 3.2) * 0.13,
+        Math.sin(rt * 22.0 + 5.0) * 0.13,
+        Math.sin(rt * 28.0 + 0.4) * 0.13,
       ];
-      const ragHeadX = Math.sin(rt * 22.0) * 0.26 * ragdollBlend;
-      const ragHeadY = Math.cos(rt * 18.0 + 0.8) * 0.22 * ragdollBlend;
-      const ragHeadZ = Math.sin(rt * 15.0 + 2.1) * 0.12 * ragdollBlend;
-      const ragTailX = Math.sin(rt * 34.0) * 0.20 * ragdollBlend;
-      const ragTailY = Math.cos(rt * 29.0) * 0.14 * ragdollBlend;
+      const ragHeadX = Math.sin(rt * 22.0) * 0.12 * ragdollBlend;
+      const ragHeadY = Math.cos(rt * 18.0 + 0.8) * 0.10 * ragdollBlend;
+      const ragHeadZ = Math.sin(rt * 15.0 + 2.1) * 0.10 * ragdollBlend;
+      const ragTailX = Math.sin(rt * 34.0) * 0.12 * ragdollBlend;
+      const ragTailY = Math.cos(rt * 29.0) * 0.10 * ragdollBlend;
 
       const stretchY = 1.0 + 0.15 * jumpBlend;
       const squeezeXZ = 1.0 / Math.sqrt(stretchY);
@@ -1094,34 +1094,36 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
               y += 0.27 * lw * jumpBlend;
               z -= (z >= 0 ? 0.11 : -0.11) * lw * jumpBlend;
             }
-            // Рэгдолл: хаотичное дёрганье каждой лапы по X, Y, Z
+            // Рэгдолл: хаотичное дёрганье кончиков лап (через lw * lw, корпус не раздувается)
             if (ragdollBlend > 0.005) {
               const q = legQuad[v];
-              const rlw = lw * ragdollBlend;
+              const rlw = lw * lw * ragdollBlend;
               x += ragLegX[q] * rlw;
               y += ragLegY[q] * rlw;
               z += ragLegZ[q] * rlw;
             }
           }
 
-          // Хвост (z < minZ + length * 0.15): виляние при беге/покое и бешенное вращение в рэгдолле
+          // Хвост (z < minZ + length * 0.15): виляние при беге/покое и дёрганье кончика в рэгдолле
           const tw = tailWeights[v];
           if (tw > 0) {
-            x += (tailWagX + ragTailX) * tw;
-            y += (tailWagY + ragTailY) * tw;
+            const rtw = tw * tw;
+            x += tailWagX * tw + ragTailX * rtw;
+            y += tailWagY * tw + ragTailY * rtw;
           }
 
-          // Голова и пятак (z > maxZ - length * 0.28): удар (kick) вниз по Y и вперёд по Z + мотание в рэгдолле
+          // Голова и пятак (z > maxZ - length * 0.28): лёгкий кивок при ударе (kick) и дёрганье пятака в рэгдолле (hw * hw)
           const hw = headWeights[v];
           if (hw > 0) {
             if (kickLunge > 0.005) {
-              y -= 0.36 * kickLunge * hw;
-              z += 0.46 * kickLunge * hw;
+              y -= 0.14 * kickLunge * hw;
+              z += 0.14 * kickLunge * hw;
             }
             if (ragdollBlend > 0.005) {
-              x += ragHeadX * hw;
-              y += ragHeadY * hw;
-              z += ragHeadZ * hw;
+              const rhw = hw * hw;
+              x += ragHeadX * rhw;
+              y += ragHeadY * rhw;
+              z += ragHeadZ * rhw;
             }
           }
 
@@ -1143,16 +1145,17 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
         entry.posAttr.needsUpdate = true;
       }
 
-      // Лёгкая вторичная динамика корпуса (переваливание при беге, отдача удара, пружина приземления)
+      // Вторичная динамика корпуса (переваливание при беге, основной наклон/выпад удара, пружина приземления)
       if (isRag) {
         animPivot.position.set(0, 0, 0);
-        animPivot.rotation.set(0, 0, Math.sin(time * 16) * 0.14);
-        animPivot.scale.set(sqX, sqY, sqZ);
+        animPivot.rotation.set(0, 0, Math.sin(time * 16) * 0.10);
+        animPivot.scale.set(1, 1, 1);
       } else {
         const bounce = Math.abs(sinRun) * 0.10 * runBlend;
         const roll = sinRun * 0.11 * runBlend;
-        animPivot.position.set(0, bounce, kickLunge * 0.14);
-        animPivot.rotation.set(0, 0, roll);
+        const kickPitch = kickLunge > 0.001 ? 0.22 * kickLunge : 0;
+        animPivot.position.set(0, bounce, kickLunge * 0.26);
+        animPivot.rotation.set(kickPitch, 0, roll);
         animPivot.scale.set(sqX, sqY, sqZ);
       }
       return;
