@@ -166,6 +166,7 @@ class SoundFX {
     this.tone(784, 1046, 0.22, 'sine', 0.16, 0.18);
   }
   horn()    { this.tone(330, 322, 0.22, 'sawtooth', 0.14); this.tone(415, 405, 0.22, 'square', 0.08); }
+  carHit()  { this.tone(160, 48, 0.19, 'sawtooth', 0.24); this.tone(390, 130, 0.14, 'triangle', 0.14, 0.02); }
 }
 const sfx = new SoundFX();
 
@@ -479,15 +480,21 @@ const matPlayer  = new CANNON.Material('player');
 const matTractor = new CANNON.Material('tractor');
 const matProp    = new CANNON.Material('prop');
 const matNpc     = new CANNON.Material('npc');
+const matVehicle = new CANNON.Material('vehicle');
 
-world.addContactMaterial(new CANNON.ContactMaterial(matPlayer, matWorld,  { friction: 0.0, restitution: 0.05 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matPlayer, matSlide,  { friction: 0.005, restitution: 0.02 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matProp,   matSlide,  { friction: 0.01, restitution: 0.05 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matNpc,    matSlide,  { friction: 0.01, restitution: 0.05 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matTractor, matWorld, { friction: 0.03, restitution: 0.05 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matProp,   matWorld,  { friction: 0.50, restitution: 0.30 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matNpc,    matWorld,  { friction: 0.28, restitution: 0.34 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matTractor, matProp,  { friction: 0.20, restitution: 0.55 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matPlayer,  matWorld,   { friction: 0.0, restitution: 0.05 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matPlayer,  matSlide,   { friction: 0.005, restitution: 0.02 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matProp,    matSlide,   { friction: 0.01, restitution: 0.05 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matNpc,     matSlide,   { friction: 0.01, restitution: 0.05 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matTractor, matWorld,   { friction: 0.03, restitution: 0.05 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matProp,    matWorld,   { friction: 0.50, restitution: 0.30 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matNpc,     matWorld,   { friction: 0.28, restitution: 0.34 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matTractor, matProp,    { friction: 0.20, restitution: 0.55 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matVehicle, matWorld,   { friction: 0.24, restitution: 0.20 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matVehicle, matPlayer,  { friction: 0.12, restitution: 0.25 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matVehicle, matTractor, { friction: 0.18, restitution: 0.45 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matVehicle, matProp,    { friction: 0.30, restitution: 0.32 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matVehicle, matVehicle, { friction: 0.25, restitution: 0.25 }));
 
 function stdMat(color, roughness = 0.78, metalness = 0.04) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
@@ -746,6 +753,8 @@ function placeKenneyModel({
   yaw = 0,
   targetSize = 11.0,
   scaleMode = 'maxHoriz', // 'maxHoriz' | 'height'
+  pbrStyle = null,        // 'brick-house' | 'concrete-house' | 'windmill' | 'water-tower' | 'container'
+  pbrTint = 0xffffff,
   fallbackBuilder,
   onLoaded = null,
 }) {
@@ -784,6 +793,12 @@ function placeKenneyModel({
     model.position.x -= center.x;
     model.position.z -= center.z;
     model.position.y -= scaledBox.min.y;
+    inner.updateMatrixWorld(true);
+
+    // Заменяем мультяшные материалы Kenney на реалистичные PBR-текстуры с корректными мировыми UV
+    if (pbrStyle) {
+      applyPBRToKenneyModel(inner, finalSize, pbrStyle, pbrTint);
+    }
 
     model.traverse((obj) => {
       if (obj.isMesh) {
@@ -868,32 +883,38 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     fallbackMap = null,
     fallbackRoughness = 0.90,
     roughness = 0.92,
+    metalness = 0.0,
     useNormal = false,
     useRoughness = false,
+    useMetalness = false,
     normalScale = 0.5,
     color = 0xffffff,
+    side = THREE.FrontSide,
   } = options;
 
-  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${useNormal}|${useRoughness}|${normalScale}|${color}`;
+  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${metalness}|${useNormal}|${useRoughness}|${useMetalness}|${normalScale}|${color}|${side}`;
   if (pbrMaterialCache.has(key)) return pbrMaterialCache.get(key);
 
   const mat = new THREE.MeshStandardMaterial({
     color,
     map: fallbackMap || null,
     roughness: fallbackRoughness,
-    metalness: 0.0,
+    metalness: useMetalness ? Math.max(0.5, metalness) : metalness,
+    side,
   });
   pbrMaterialCache.set(key, mat);
 
   const colorUrl = `${TEXTURE_DIR}${prefix}_Color.jpg`;
   const normalUrl = `${TEXTURE_DIR}${prefix}_NormalGL.jpg`;
   const roughUrl = `${TEXTURE_DIR}${prefix}_Roughness.jpg`;
+  const metalUrl = `${TEXTURE_DIR}${prefix}_Metalness.jpg`;
 
   Promise.all([
     loadCachedRawTexture(colorUrl),
     useNormal ? loadCachedRawTexture(normalUrl) : Promise.resolve(null),
     useRoughness ? loadCachedRawTexture(roughUrl) : Promise.resolve(null),
-  ]).then(([rawColor, rawNormal, rawRough]) => {
+    useMetalness ? loadCachedRawTexture(metalUrl) : Promise.resolve(null),
+  ]).then(([rawColor, rawNormal, rawRough, rawMetal]) => {
     let changed = false;
     if (rawColor) {
       const cTex = configurePBRTexture(rawColor, repeatX, repeatY, true);
@@ -914,10 +935,328 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
         changed = true;
       }
     }
+    if (rawMetal) {
+      const mTex = configurePBRTexture(rawMetal, repeatX, repeatY, false);
+      if (mTex) {
+        mat.metalnessMap = mTex;
+        mat.metalness = metalness > 0 ? metalness : 1.0;
+        changed = true;
+      }
+    }
     if (changed) mat.needsUpdate = true;
   });
 
   return mat;
+}
+
+// Набор реалистичных кэшированных PBR-материалов для домов, крыш, заборов, башни, мельницы и контейнеров
+let worldPBRCache = null;
+function getWorldPBRMaterials() {
+  if (worldPBRCache) return worldPBRCache;
+  worldPBRCache = {
+    bricks: loadPBRMaterial('Bricks085_1K-JPG', 2, 2, {
+      fallbackMap: texPlaza,
+      fallbackRoughness: 0.88,
+      roughness: 0.90,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.72,
+    }),
+    concrete: loadPBRMaterial('Concrete042C_1K-JPG', 1.6, 1.6, {
+      fallbackMap: texConcrete,
+      fallbackRoughness: 0.90,
+      roughness: 0.92,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.62,
+    }),
+    concreteTower: loadPBRMaterial('Concrete042C_1K-JPG', 2, 3, {
+      fallbackMap: texConcrete,
+      fallbackRoughness: 0.90,
+      roughness: 0.90,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.65,
+    }),
+    roofTiles: loadPBRMaterial('RoofingTiles001_1K-JPG', 2.4, 2.4, {
+      fallbackMap: texPlaza,
+      fallbackRoughness: 0.82,
+      roughness: 0.85,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.78,
+    }),
+    planksWindmill: loadPBRMaterial('Planks039_1K-JPG', 2, 2, {
+      fallbackMap: texCrate,
+      fallbackRoughness: 0.85,
+      roughness: 0.88,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.68,
+    }),
+    planksFenceRail: loadPBRMaterial('Planks039_1K-JPG', 2.2, 0.45, {
+      fallbackMap: texCrate,
+      fallbackRoughness: 0.85,
+      roughness: 0.86,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.62,
+    }),
+    planksFencePost: loadPBRMaterial('Planks039_1K-JPG', 0.45, 1.4, {
+      fallbackMap: texCrate,
+      fallbackRoughness: 0.85,
+      roughness: 0.86,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.62,
+    }),
+    glassWindow: new THREE.MeshStandardMaterial({
+      color: 0x5c9ac2,
+      roughness: 0.14,
+      metalness: 0.35,
+    }),
+    metalContainer(tintHex = 0xffffff) {
+      return loadPBRMaterial('Metal041B_1K-JPG', 2, 2, {
+        fallbackMap: texConcrete,
+        fallbackRoughness: 0.55,
+        roughness: 0.52,
+        metalness: 0.92,
+        useNormal: true,
+        useRoughness: true,
+        useMetalness: true,
+        normalScale: 0.68,
+        color: tintHex,
+      });
+    },
+  };
+  return worldPBRCache;
+}
+
+// Генерирует аккуратные мировые Box-Projection UV в метрах для моделей Kenney,
+// чтобы тайловые PBR-текстуры (Bricks085, RoofingTiles001, Planks039, Metal041B, Concrete042C)
+// ложились без растяжек и с предсказуемым масштабом repeat.set!
+function applyWorldBoxUVs(mesh, rootInverseMatrix, uvUnitMeters = 4.0) {
+  if (!mesh || !mesh.geometry || !mesh.geometry.attributes || !mesh.geometry.attributes.position) return;
+  const geo = mesh.geometry.clone();
+  mesh.geometry = geo;
+  if (!geo.attributes.normal) geo.computeVertexNormals();
+
+  const relMat = new THREE.Matrix4().multiplyMatrices(rootInverseMatrix, mesh.matrixWorld);
+  const normMat = new THREE.Matrix3().getNormalMatrix(relMat);
+  const posAttr = geo.attributes.position;
+  const normAttr = geo.attributes.normal;
+  const uvArr = new Float32Array(posAttr.count * 2);
+
+  const p = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const invScale = 1.0 / Math.max(0.25, uvUnitMeters);
+
+  for (let i = 0; i < posAttr.count; i++) {
+    p.fromBufferAttribute(posAttr, i).applyMatrix4(relMat);
+    n.fromBufferAttribute(normAttr, i).applyMatrix3(normMat).normalize();
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+
+    let u, v;
+    if (ay >= ax && ay >= az) {
+      u = p.x * invScale;
+      v = p.z * invScale;
+    } else if (ax >= az) {
+      u = p.z * invScale;
+      v = p.y * invScale;
+    } else {
+      u = p.x * invScale;
+      v = p.y * invScale;
+    }
+    uvArr[i * 2] = u;
+    uvArr[i * 2 + 1] = v;
+  }
+
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
+  geo.attributes.uv.needsUpdate = true;
+}
+
+// Если здание building-*.glb пришло одним слитым мешем с 1 материалом,
+// разделяем треугольники на 2 группы (стены и крыша) по высоте и нормали!
+function splitSingleMeshIntoWallAndRoof(mesh, rootInverseMatrix, buildingHeight, wallMat, roofMat) {
+  let geo = mesh.geometry;
+  if (geo.index) {
+    geo = geo.toNonIndexed();
+    mesh.geometry = geo;
+  }
+  if (!geo.attributes.normal) geo.computeVertexNormals();
+
+  const posAttr = geo.attributes.position;
+  const normAttr = geo.attributes.normal;
+  const uvAttr = geo.attributes.uv;
+  const relMat = new THREE.Matrix4().multiplyMatrices(rootInverseMatrix, mesh.matrixWorld);
+  const normMat = new THREE.Matrix3().getNormalMatrix(relMat);
+
+  const vCount = posAttr.count;
+  const triCount = Math.floor(vCount / 3);
+  const wallTris = [];
+  const roofTris = [];
+
+  const p0 = new THREE.Vector3(), p1 = new THREE.Vector3(), p2 = new THREE.Vector3();
+  const n0 = new THREE.Vector3(), n1 = new THREE.Vector3(), n2 = new THREE.Vector3();
+  const roofYThresh = buildingHeight * 0.60;
+
+  for (let t = 0; t < triCount; t++) {
+    const i0 = t * 3, i1 = i0 + 1, i2 = i0 + 2;
+    p0.fromBufferAttribute(posAttr, i0).applyMatrix4(relMat);
+    p1.fromBufferAttribute(posAttr, i1).applyMatrix4(relMat);
+    p2.fromBufferAttribute(posAttr, i2).applyMatrix4(relMat);
+    n0.fromBufferAttribute(normAttr, i0).applyMatrix3(normMat);
+    n1.fromBufferAttribute(normAttr, i1).applyMatrix3(normMat);
+    n2.fromBufferAttribute(normAttr, i2).applyMatrix3(normMat);
+
+    const avgY = (p0.y + p1.y + p2.y) / 3;
+    const avgNy = (n0.y + n1.y + n2.y) / 3;
+    const isRoof = (avgY > roofYThresh && avgNy > 0.28) || (avgY > buildingHeight * 0.78 && avgNy > 0.08);
+    if (isRoof) roofTris.push(t);
+    else wallTris.push(t);
+  }
+
+  if (roofTris.length === 0 || wallTris.length === 0) {
+    mesh.material = wallMat;
+    return;
+  }
+
+  const ordered = wallTris.concat(roofTris);
+  const newPos = new Float32Array(vCount * 3);
+  const newNorm = new Float32Array(vCount * 3);
+  const newUv = uvAttr ? new Float32Array(vCount * 2) : null;
+
+  for (let k = 0; k < ordered.length; k++) {
+    const srcT = ordered[k];
+    for (let c = 0; c < 3; c++) {
+      const sIdx = srcT * 3 + c;
+      const dIdx = k * 3 + c;
+      newPos[dIdx * 3]     = posAttr.getX(sIdx);
+      newPos[dIdx * 3 + 1] = posAttr.getY(sIdx);
+      newPos[dIdx * 3 + 2] = posAttr.getZ(sIdx);
+      newNorm[dIdx * 3]     = normAttr.getX(sIdx);
+      newNorm[dIdx * 3 + 1] = normAttr.getY(sIdx);
+      newNorm[dIdx * 3 + 2] = normAttr.getZ(sIdx);
+      if (newUv) {
+        newUv[dIdx * 2]     = uvAttr.getX(sIdx);
+        newUv[dIdx * 2 + 1] = uvAttr.getY(sIdx);
+      }
+    }
+  }
+
+  geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(newNorm, 3));
+  if (newUv) geo.setAttribute('uv', new THREE.BufferAttribute(newUv, 2));
+  geo.clearGroups();
+  geo.addGroup(0, wallTris.length * 3, 0);
+  geo.addGroup(wallTris.length * 3, roofTris.length * 3, 1);
+  mesh.material = [wallMat, roofMat];
+}
+
+// Заменяет мультяшные материалы на реалистичные PBR-текстуры для домов и построек Kenney
+function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) {
+  const pbr = getWorldPBRMaterials();
+  innerRoot.updateMatrixWorld(true);
+  const invRoot = new THREE.Matrix4().copy(innerRoot.matrixWorld).invert();
+
+  const meshes = [];
+  innerRoot.traverse((obj) => {
+    if (obj.isMesh && obj.geometry) meshes.push(obj);
+  });
+  if (meshes.length === 0) return;
+
+  if (style === 'water-tower') {
+    for (const m of meshes) {
+      applyWorldBoxUVs(m, invRoot, 5.0);
+      m.material = pbr.concreteTower;
+    }
+    return;
+  }
+
+  if (style === 'container') {
+    const metalMat = pbr.metalContainer(tintHex);
+    for (const m of meshes) {
+      applyWorldBoxUVs(m, invRoot, 3.6);
+      m.material = metalMat;
+    }
+    return;
+  }
+
+  if (style === 'windmill') {
+    for (const m of meshes) {
+      applyWorldBoxUVs(m, invRoot, 4.2);
+      const nameStr = `${m.name || ''} ${(m.material && m.material.name) || ''}`.toLowerCase();
+      if (/cloth|canvas/.test(nameStr)) continue;
+      if (/roof|cap|tile/.test(nameStr)) {
+        m.material = pbr.roofTiles;
+      } else {
+        m.material = pbr.planksWindmill;
+      }
+    }
+    return;
+  }
+
+  // Дома (building-*.glb): стены из Bricks085 или Concrete042C, крыши из RoofingTiles001
+  const wallMat = (style === 'concrete-house') ? pbr.concrete : pbr.bricks;
+  const roofMat = pbr.roofTiles;
+
+  // Проверяем, есть ли у здания разделённые материалы/меши или оно полностью слито в один материал
+  const singleMergedMesh = meshes.length === 1 && !Array.isArray(meshes[0].material);
+  if (singleMergedMesh) {
+    applyWorldBoxUVs(meshes[0], invRoot, 4.0);
+    splitSingleMeshIntoWallAndRoof(meshes[0], invRoot, Math.max(2.0, finalSize.y), wallMat, roofMat);
+    return;
+  }
+
+  const pickHouseMaterial = (oldMat, meshName, meshBox, avgNy) => {
+    const mName = `${meshName || ''} ${(oldMat && oldMat.name) || ''}`.toLowerCase();
+    if (/window|glass|pane|light|glow/.test(mName)) return pbr.glassWindow;
+    if (/roof|tile|shingle|chimney/.test(mName)) return roofMat;
+    if (/door|wood|plank|porch|shutter|fence/.test(mName)) return pbr.planksWindmill;
+    if (/concrete|stone|base|foundation|step|trim|gutter/.test(mName)) return pbr.concrete;
+
+    // Если имена материалов стандартные (например, colormap / Material.001), определяем по цвету и геометрии
+    if (oldMat && oldMat.color) {
+      const c = oldMat.color;
+      if (c.b > c.r * 1.25 && c.b > 0.42 && c.g > 0.35) return pbr.glassWindow;
+    }
+    if (meshBox && meshBox.min.y > finalSize.y * 0.55 && avgNy > 0.32) {
+      return roofMat;
+    }
+    return wallMat;
+  };
+
+  for (const m of meshes) {
+    applyWorldBoxUVs(m, invRoot, 4.0);
+
+    // Считаем локальный boundingBox и среднюю вертикальную нормаль меша для определения крыши
+    const relMat = new THREE.Matrix4().multiplyMatrices(invRoot, m.matrixWorld);
+    const normMat = new THREE.Matrix3().getNormalMatrix(relMat);
+    const posAttr = m.geometry.attributes.position;
+    const normAttr = m.geometry.attributes.normal;
+    const mBox = new THREE.Box3();
+    const p = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    let nySum = 0;
+    const step = Math.max(1, Math.floor(posAttr.count / 120));
+    let samples = 0;
+    for (let i = 0; i < posAttr.count; i += step) {
+      p.fromBufferAttribute(posAttr, i).applyMatrix4(relMat);
+      mBox.expandByPoint(p);
+      if (normAttr) {
+        n.fromBufferAttribute(normAttr, i).applyMatrix3(normMat).normalize();
+        nySum += n.y;
+        samples++;
+      }
+    }
+    const avgNy = samples > 0 ? nySum / samples : 0;
+
+    if (Array.isArray(m.material)) {
+      m.material = m.material.map((oldMat) => pickHouseMaterial(oldMat, m.name, mBox, avgNy));
+    } else {
+      m.material = pickHouseMaterial(m.material, m.name, mBox, avgNy);
+    }
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -1185,34 +1524,55 @@ function buildWorld() {
   if (rimRockInst.instanceColor) rimRockInst.instanceColor.needsUpdate = true;
   scene.add(rimRockInst);
 
-  // Густая лесная опушка вдоль границ карты (InstancedMesh)
-  const RIM_TREE_COUNT = isMobile ? 130 : 190;
-  const rimTrunkGeo = new THREE.CylinderGeometry(0.36, 0.60, 4.0, 7);
-  rimTrunkGeo.translate(0, 2.0, 0);
-  const rimCrownGeo = new THREE.ConeGeometry(2.4, 5.6, 8);
-  rimCrownGeo.translate(0, 5.4, 0);
-  const rimTrunkInst = new THREE.InstancedMesh(rimTrunkGeo, stdMat(0x6e4324, 0.9), RIM_TREE_COUNT);
-  const rimCrownInst = new THREE.InstancedMesh(rimCrownGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.84 }), RIM_TREE_COUNT);
+  // Густая лесная опушка вдоль границ карты: заменяем конусные деревья на ./models/pine_tree_low-poly.glb
+  const RIM_TREE_COUNT = isMobile ? 110 : 165;
+  const rimTreeTransforms = [];
   for (let i = 0; i < RIM_TREE_COUNT; i++) {
     const side = i % 4;
     const along = (Math.random() - 0.5) * (WORLD_SIZE - 12);
     const offset = HALF_WORLD - 5 - Math.random() * 9;
     const tx = side === 0 ? along : (side === 1 ? along : (side === 2 ? -offset : offset));
     const tz = side === 0 ? -offset : (side === 1 ? offset : along);
-    const sc = 0.95 + Math.random() * 0.65;
-    rimDummy.position.set(tx, 0, tz);
-    rimDummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-    rimDummy.scale.set(sc, sc * (0.95 + Math.random() * 0.35), sc);
-    rimDummy.updateMatrix();
-    rimTrunkInst.setMatrixAt(i, rimDummy.matrix);
-    rimCrownInst.setMatrixAt(i, rimDummy.matrix);
-    rimCol.setHSL(0.30 + (Math.random() - 0.5) * 0.05, 0.55, 0.30 + Math.random() * 0.14);
-    rimCrownInst.setColorAt(i, rimCol);
+    const hScale = 8.5 + Math.random() * 5.0;
+    const wScale = hScale * (0.85 + Math.random() * 0.25);
+    rimTreeTransforms.push({
+      x: tx,
+      y: 0,
+      z: tz,
+      rotY: Math.random() * Math.PI * 2,
+      sx: wScale,
+      sy: hScale,
+      sz: wScale,
+    });
   }
-  rimTrunkInst.instanceMatrix.needsUpdate = true;
-  rimCrownInst.instanceMatrix.needsUpdate = true;
-  if (rimCrownInst.instanceColor) rimCrownInst.instanceColor.needsUpdate = true;
-  scene.add(rimTrunkInst, rimCrownInst);
+  loadPlantVariants('pine_tree_low-poly.glb', 'height').then((variants) => {
+    if (variants) {
+      buildInstancedPlantGroup(variants, rimTreeTransforms, { castShadow: false, receiveShadow: false });
+      return;
+    }
+    // Мягкий fallback, если pine_tree_low-poly.glb недоступен
+    const rimTrunkGeo = new THREE.CylinderGeometry(0.36, 0.60, 4.0, 7);
+    rimTrunkGeo.translate(0, 2.0, 0);
+    const rimCrownGeo = new THREE.ConeGeometry(2.4, 5.6, 8);
+    rimCrownGeo.translate(0, 5.4, 0);
+    const rimTrunkInst = new THREE.InstancedMesh(rimTrunkGeo, stdMat(0x6e4324, 0.9), RIM_TREE_COUNT);
+    const rimCrownInst = new THREE.InstancedMesh(rimCrownGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.84 }), RIM_TREE_COUNT);
+    rimTreeTransforms.forEach((t, i) => {
+      const sc = t.sy / 9.0;
+      rimDummy.position.set(t.x, 0, t.z);
+      rimDummy.rotation.set(0, t.rotY, 0);
+      rimDummy.scale.set(sc, sc, sc);
+      rimDummy.updateMatrix();
+      rimTrunkInst.setMatrixAt(i, rimDummy.matrix);
+      rimCrownInst.setMatrixAt(i, rimDummy.matrix);
+      rimCol.setHSL(0.30 + (Math.random() - 0.5) * 0.05, 0.55, 0.30 + Math.random() * 0.14);
+      rimCrownInst.setColorAt(i, rimCol);
+    });
+    rimTrunkInst.instanceMatrix.needsUpdate = true;
+    rimCrownInst.instanceMatrix.needsUpdate = true;
+    if (rimCrownInst.instanceColor) rimCrownInst.instanceColor.needsUpdate = true;
+    scene.add(rimTrunkInst, rimCrownInst);
+  });
 
   // Сеть магистральных дорог с PBR-материалом Road012B_1K-JPG (разметка строго вдоль полотна)
   const roadMat = loadPBRMaterial('Road012B_1K-JPG', 1, 42, {
@@ -1253,11 +1613,12 @@ function buildWorld() {
     g.position.set(x, 0, z);
     g.rotation.y = yaw;
 
-    const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.84 });
-    const roofMat = new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.72 });
-    const trimMat = stdMat(0xfaf2e4, 0.75);
-    const doorMat = new THREE.MeshStandardMaterial({ map: makeWoodWallTex('#7a4522', '#47250f', '#99592e'), roughness: 0.78 });
-    const winMat  = stdMat(0x8be0ff, 0.22, 0.18);
+    const pbrMats = getWorldPBRMaterials();
+    const wallMat = (wallTex === 'concrete') ? pbrMats.concrete : pbrMats.bricks;
+    const roofMat = pbrMats.roofTiles;
+    const trimMat = pbrMats.concrete;
+    const doorMat = pbrMats.planksWindmill;
+    const winMat  = pbrMats.glassWindow;
 
     const base = new THREE.Mesh(new THREE.BoxGeometry(w + 0.4, 0.52, dep + 0.4), stdMat(0x85807a, 0.9));
     base.position.y = 0.26; base.receiveShadow = true; base.castShadow = true;
@@ -1296,8 +1657,10 @@ function buildWorld() {
     return { mesh: g, body };
   }
 
-  function createGlbHouse(filename, x, z, yaw, targetSize, wallTex, roofTex, fw = 9.5, fh = 5.2, fdep = 8.2, acornIdx = -1) {
+  let glbHouseIndex = 0;
+  function createGlbHouse(filename, x, z, yaw, targetSize, wallTex, roofTex, fw = 9.5, fh = 5.2, fdep = 8.2, acornIdx = -1, wallKind = null) {
     noTreeZones.push({ x, z, r: targetSize * 0.88 });
+    const kind = wallKind || ((glbHouseIndex++ % 3 === 1) ? 'concrete' : 'brick');
     placeKenneyModel({
       filename,
       x,
@@ -1305,7 +1668,8 @@ function buildWorld() {
       yaw,
       targetSize,
       scaleMode: 'maxHoriz',
-      fallbackBuilder: () => createCottage(x, z, yaw, wallTex, roofTex, fw, fh, fdep),
+      pbrStyle: kind === 'concrete' ? 'concrete-house' : 'brick-house',
+      fallbackBuilder: () => createCottage(x, z, yaw, kind, roofTex, fw, fh, fdep),
       onLoaded: (holder, finalSize) => {
         if (acornIdx >= 0 && roofHeightHooks.has(acornIdx)) {
           roofHeightHooks.get(acornIdx)(finalSize.y + 1.15);
@@ -1318,19 +1682,18 @@ function buildWorld() {
     noTreeZones.push({ x, z, r: 9.0 });
     const g = new THREE.Group();
     g.position.set(x, 0, z);
-    const legMat = stdMat(0x525866, 0.6, 0.45);
-    const tankMat = stdMat(0xc78d52, 0.78);
-    const roofMat = stdMat(0x4b5463, 0.55, 0.4);
+    const pbrMats = getWorldPBRMaterials();
+    const concreteMat = pbrMats.concreteTower;
     for (const sx of [-2.1, 2.1]) {
       for (const sz of [-2.1, 2.1]) {
-        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.34, 10.5, 8), legMat);
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.34, 10.5, 8), concreteMat);
         leg.position.set(sx, 5.25, sz); leg.castShadow = true; leg.receiveShadow = true;
         g.add(leg);
       }
     }
-    const tank = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.2, 4.2, 14), tankMat);
+    const tank = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.2, 4.2, 14), concreteMat);
     tank.position.y = 12.2; tank.castShadow = true; tank.receiveShadow = true;
-    const cap = new THREE.Mesh(new THREE.ConeGeometry(3.6, 2.2, 14), roofMat);
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(3.6, 2.2, 14), concreteMat);
     cap.position.y = 15.2; cap.castShadow = true;
     g.add(tank, cap);
     scene.add(g);
@@ -1342,7 +1705,7 @@ function buildWorld() {
 
   function createFallbackContainer(x, z, yaw, colorHex = 0xd94b38, yBase = 0) {
     noTreeZones.push({ x, z, r: 6.5 });
-    const m = new THREE.Mesh(new THREE.BoxGeometry(3.0, 2.9, 7.6), stdMat(colorHex, 0.65, 0.25));
+    const m = new THREE.Mesh(new THREE.BoxGeometry(3.0, 2.9, 7.6), getWorldPBRMaterials().metalContainer(colorHex));
     m.position.set(x, yBase + 1.45, z); m.rotation.y = yaw;
     m.castShadow = true; m.receiveShadow = true;
     scene.add(m);
@@ -1482,6 +1845,7 @@ function buildWorld() {
     yaw: 0.4,
     targetSize: 16.0,
     scaleMode: 'height',
+    pbrStyle: 'water-tower',
     fallbackBuilder: () => createFallbackWaterTower(-20, 12),
   });
 
@@ -1493,7 +1857,9 @@ function buildWorld() {
     yaw: Math.PI / 2,
     targetSize: 7.8,
     scaleMode: 'maxHoriz',
-    fallbackBuilder: () => createFallbackContainer(14, -14.5, Math.PI / 2, 0xd94b38),
+    pbrStyle: 'container',
+    pbrTint: 0xf0c2b8,
+    fallbackBuilder: () => createFallbackContainer(14, -14.5, Math.PI / 2, 0xf0c2b8),
   });
 
   // Цистерна рядом с взрывными бочками в центре
@@ -1600,7 +1966,7 @@ function buildWorld() {
     fallbackBuilder: () => createFallbackTank(-28, -156, 0.2),
   });
 
-  // Ветряк windmill.glb (~16м) с мягким fallback на процедурную мельницу
+  // Ветряк windmill.glb (~16м) покрытый досками Planks039 с мягким fallback на процедурную мельницу
   placeKenneyModel({
     filename: 'windmill.glb',
     x: 16,
@@ -1608,6 +1974,7 @@ function buildWorld() {
     yaw: 0,
     targetSize: 16.0,
     scaleMode: 'height',
+    pbrStyle: 'windmill',
     fallbackBuilder: () => {
       const wx = 16, wz = -152;
       const wg = new THREE.Group();
@@ -1615,7 +1982,7 @@ function buildWorld() {
 
       const tower = new THREE.Mesh(
         new THREE.CylinderGeometry(2.2, 3.6, 14.5, 12),
-        new THREE.MeshStandardMaterial({ map: wallPlasterCream, roughness: 0.82 })
+        getWorldPBRMaterials().planksWindmill
       );
       tower.position.y = 7.25; tower.castShadow = true; tower.receiveShadow = true;
       const cap = new THREE.Mesh(new THREE.ConeGeometry(2.7, 3.4, 12), stdMat(0x8f3a26, 0.72));
@@ -1746,7 +2113,7 @@ function buildWorld() {
   createRamp(136, 14, -Math.PI / 2, 8.2, 15.0, 0.44, 0);
   createTrampoline(124, 14, 2.9, 27.5);
 
-  // Трюковые морские контейнеры (shipping-container-a.glb) у трамплинов стройки
+  // Трюковые морские контейнеры (shipping-container-a.glb) из металла Metal041B (с Metalness) у трамплинов стройки
   placeKenneyModel({
     filename: 'shipping-container-a.glb',
     x: 148,
@@ -1754,7 +2121,9 @@ function buildWorld() {
     yaw: 0,
     targetSize: 8.2,
     scaleMode: 'maxHoriz',
-    fallbackBuilder: () => createFallbackContainer(148, 14, 0, 0x2f75c9),
+    pbrStyle: 'container',
+    pbrTint: 0xc2d8f0,
+    fallbackBuilder: () => createFallbackContainer(148, 14, 0, 0xc2d8f0),
   });
   placeKenneyModel({
     filename: 'shipping-container-a.glb',
@@ -1763,7 +2132,9 @@ function buildWorld() {
     yaw: 0.14,
     targetSize: 8.2,
     scaleMode: 'maxHoriz',
-    fallbackBuilder: () => createFallbackContainer(148, 21, 0.14, 0xd94b38),
+    pbrStyle: 'container',
+    pbrTint: 0xf0c2b8,
+    fallbackBuilder: () => createFallbackContainer(148, 21, 0.14, 0xf0c2b8),
   });
   placeKenneyModel({
     filename: 'shipping-container-a.glb',
@@ -1772,7 +2143,9 @@ function buildWorld() {
     yaw: Math.PI / 2,
     targetSize: 7.6,
     scaleMode: 'maxHoriz',
-    fallbackBuilder: () => createFallbackContainer(124, -14, Math.PI / 2, 0xe08d28),
+    pbrStyle: 'container',
+    pbrTint: 0xf2dfc0,
+    fallbackBuilder: () => createFallbackContainer(124, -14, Math.PI / 2, 0xf2dfc0),
   });
 
   // Цистерны (detail-tank-large.glb) рядом со взрывными бочками на стройке
@@ -1936,7 +2309,9 @@ function buildWorld() {
     yaw: 0.25,
     targetSize: 7.8,
     scaleMode: 'maxHoriz',
-    fallbackBuilder: () => createFallbackContainer(-124, 18, 0.25, 0x3b994c),
+    pbrStyle: 'container',
+    pbrTint: 0xc4e0cc,
+    fallbackBuilder: () => createFallbackContainer(-124, 18, 0.25, 0xc4e0cc),
   });
   createGlbHouse('building-h.glb', -164, -26, 1.2, 10.5, wallWoodMint, roofBrown, 9.4, 5.0, 7.8);
   createGlbHouse('building-q.glb', -164,  26, 2.0, 10.5, wallPlasterBlue, roofViolet, 9.4, 5.0, 7.8);
@@ -2114,76 +2489,74 @@ function buildWorld() {
     return null;
   }
 
-  // 3a) Лёгкие стилизованные low-poly деревья (3-слойная крона + ствол через InstancedMesh)
-  (function spawnOptimizedTrees() {
-    const TREE_TOTAL = isMobile ? 95 : 135;
-    const trunkGeo = new THREE.CylinderGeometry(0.28, 0.50, 3.4, 6);
-    trunkGeo.translate(0, 1.7, 0);
-    const crownLowGeo = new THREE.ConeGeometry(2.35, 3.0, 7);
-    crownLowGeo.translate(0, 4.1, 0);
-    const crownMidGeo = new THREE.ConeGeometry(1.85, 2.7, 7);
-    crownMidGeo.translate(0, 5.7, 0);
-    const crownTopGeo = new THREE.ConeGeometry(1.20, 2.2, 7);
-    crownTopGeo.translate(0, 7.1, 0);
-
-    const trunkInst = new THREE.InstancedMesh(trunkGeo, stdMat(0x704526, 0.92), TREE_TOTAL);
-    const crownLowInst = new THREE.InstancedMesh(crownLowGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), TREE_TOTAL);
-    const crownMidInst = new THREE.InstancedMesh(crownMidGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), TREE_TOTAL);
-    const crownTopInst = new THREE.InstancedMesh(crownTopGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), TREE_TOTAL);
-
-    trunkInst.castShadow = true; trunkInst.receiveShadow = false;
-    crownLowInst.castShadow = true; crownLowInst.receiveShadow = false;
-    crownMidInst.castShadow = false; crownMidInst.receiveShadow = false;
-    crownTopInst.castShadow = false; crownTopInst.receiveShadow = false;
-
+  // 3a) Клонированные 3D-ёлки ./models/pine_tree_low-poly.glb со случайным поворотом по Y
+  (function spawnPineTrees() {
+    const TREE_TOTAL = isMobile ? 76 : 112;
     treePositions.length = 0;
+    const pineSpecs = [];
     let cnt = 0, tr = 0;
-    while (cnt < TREE_TOTAL && tr < TREE_TOTAL * 10) {
+    while (cnt < TREE_TOTAL && tr < TREE_TOTAL * 12) {
       tr++;
-      const x = cnt < 36 ? (-82 - Math.random() * 130) : (Math.random() - 0.5) * (WORLD_SIZE - 26);
-      const z = cnt < 36 ? ((Math.random() - 0.5) * 235) : (Math.random() - 0.5) * (WORLD_SIZE - 26);
+      const x = cnt < 34 ? (-82 - Math.random() * 130) : (Math.random() - 0.5) * (WORLD_SIZE - 26);
+      const z = cnt < 34 ? ((Math.random() - 0.5) * 235) : (Math.random() - 0.5) * (WORLD_SIZE - 26);
       if (!isClearGround(x, z)) continue;
 
       let tooClose = false;
-      for (let k = Math.max(0, treePositions.length - 35); k < treePositions.length; k++) {
-        if (Math.hypot(x - treePositions[k].x, z - treePositions[k].z) < 5.2) { tooClose = true; break; }
+      for (let k = Math.max(0, treePositions.length - 40); k < treePositions.length; k++) {
+        if (Math.hypot(x - treePositions[k].x, z - treePositions[k].z) < 5.8) { tooClose = true; break; }
       }
       if (tooClose) continue;
 
-      const s = 0.72 + Math.random() * 0.52;
-      const sy = s * (0.88 + Math.random() * 0.34);
-      dummy.position.set(x, 0, z);
-      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-      dummy.scale.set(s, sy, s);
-      dummy.updateMatrix();
-
-      trunkInst.setMatrixAt(cnt, dummy.matrix);
-      crownLowInst.setMatrixAt(cnt, dummy.matrix);
-      crownMidInst.setMatrixAt(cnt, dummy.matrix);
-      crownTopInst.setMatrixAt(cnt, dummy.matrix);
-
-      const hue = 0.27 + (Math.random() - 0.5) * 0.05;
-      tempColor.setHSL(hue, 0.52, 0.28 + Math.random() * 0.08);
-      crownLowInst.setColorAt(cnt, tempColor);
-      tempColor.setHSL(hue, 0.54, 0.35 + Math.random() * 0.08);
-      crownMidInst.setColorAt(cnt, tempColor);
-      tempColor.setHSL(hue, 0.56, 0.42 + Math.random() * 0.08);
-      crownTopInst.setColorAt(cnt, tempColor);
-
+      const s = 0.78 + Math.random() * 0.48;
+      const sy = s * (0.90 + Math.random() * 0.30);
+      const rotY = Math.random() * Math.PI * 2;
       treePositions.push({ x, z });
+      pineSpecs.push({ x, z, s, sy, rotY });
       cnt++;
     }
-
-    trunkInst.count = cnt;
-    crownLowInst.count = cnt;
-    crownMidInst.count = cnt;
-    crownTopInst.count = cnt;
-    [trunkInst, crownLowInst, crownMidInst, crownTopInst].forEach((inst) => {
-      inst.instanceMatrix.needsUpdate = true;
-      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-    });
-    scene.add(trunkInst, crownLowInst, crownMidInst, crownTopInst);
     updateTreeColliderPool();
+
+    loadModel('pine_tree_low-poly.glb').then((rawPine) => {
+      if (!rawPine) {
+        spawnFallbackTreesAndBushes();
+        return;
+      }
+
+      // Нормализуем шаблон ёлки 1 раз (высота ~9.2м, центр по X/Z, основание строго на y = 0)
+      const pineTemplate = new THREE.Group();
+      pineTemplate.add(rawPine);
+      rawPine.updateMatrixWorld(true);
+      const rawBox = new THREE.Box3().setFromObject(rawPine);
+      const rawSize = new THREE.Vector3();
+      rawBox.getSize(rawSize);
+      const normScale = 9.2 / Math.max(0.01, rawSize.y);
+      rawPine.scale.multiplyScalar(normScale);
+
+      pineTemplate.updateMatrixWorld(true);
+      const scaledBox = new THREE.Box3().setFromObject(pineTemplate);
+      const center = new THREE.Vector3();
+      scaledBox.getCenter(center);
+      rawPine.position.x -= center.x;
+      rawPine.position.z -= center.z;
+      rawPine.position.y -= scaledBox.min.y;
+      rawPine.traverse((obj) => {
+        if (obj.isMesh) {
+          obj.castShadow = true;
+          obj.receiveShadow = false;
+        }
+      });
+
+      const pineGroup = new THREE.Group();
+      pineGroup.name = 'pine_trees_group';
+      for (const sp of pineSpecs) {
+        const clone = pineTemplate.clone(true);
+        clone.position.set(sp.x, 0, sp.z);
+        clone.rotation.y = sp.rotY;
+        clone.scale.set(sp.s, sp.sy, sp.s);
+        pineGroup.add(clone);
+      }
+      scene.add(pineGroup);
+    });
   })();
 
   // 3b) ~150 пучков 3D-травы (grass_medium_01_1k.gltf) — без теней для 60 FPS на Android
@@ -2363,7 +2736,9 @@ function clearAndSpawnBreakables() {
   for (const d of debrisList) { scene.remove(d.mesh); world.removeBody(d.body); }
   debrisList.length = 0;
 
-  const woodMat = stdMat(0xa86b38, 0.84), plankMat = stdMat(0xc48248, 0.80);
+  const pbrMats = getWorldPBRMaterials();
+  const woodMat = pbrMats.planksFencePost;
+  const plankMat = pbrMats.planksFenceRail;
   const ironMat = stdMat(0x2d3138, 0.45, 0.65), glowMat = new THREE.MeshBasicMaterial({ color: 0xfff3a8 });
   const redBoxMat = stdMat(0xd9362b, 0.45, 0.25);
 
@@ -2701,6 +3076,22 @@ function explodeBarrel(barrelProp) {
       knockNpc(npc, dir, 22, null, causedByPlayer);
     }
   }
+  for (const v of vehicles) {
+    const dist = v.body.position.distanceTo(pos);
+    if (dist < 11.5 && dist > 0.05) {
+      const dir = v.body.position.vsub(pos);
+      dir.normalize();
+      const power = (1 - dist / 11.5) * 680;
+      v.body.wakeUp();
+      if (causedByPlayer) markByPlayer(v.body, 4.0);
+      v.body.applyImpulse(new CANNON.Vec3(dir.x * power, power * 0.65 + 160, dir.z * power));
+      v.body.angularVelocity.set((Math.random() - 0.5) * 5, (Math.random() - 0.5) * 5, (Math.random() - 0.5) * 5);
+      if (causedByPlayer && v.hitCooldown <= 0) {
+        v.hitCooldown = 1.0;
+        addTrick(`Авто-взлёт: ${v.name}!`, 260, v.body.position, '#ff8e3c');
+      }
+    }
+  }
   if (!inTractor) {
     const distP = playerBody.position.distanceTo(pos);
     if (distP < 6.5) {
@@ -2715,6 +3106,315 @@ function explodeBarrel(barrelProp) {
 }
 
 // ----------------------------------------------------------------------------
+
+// ----------------------------------------------------------------------------
+// 4b. ИНТЕРАКТИВНЫЕ МАШИНЫ (maintenance_vehicles.glb + bokaroo_67_-_low-poly_model.glb)
+//     Вдоль дорог и на площади — хряк может их бодать, сдвигать и получать очки!
+// ----------------------------------------------------------------------------
+const vehicles = [];
+const vehicleVariantsCache = new Map(); // filename -> Promise<Array<{ template, size }> | null>
+
+function normalizeVehicleSubtree(node, targetLength) {
+  const wrapper = new THREE.Group();
+  const inner = node.clone(true);
+  wrapper.add(inner);
+
+  // Сбрасываем локальную позицию/поворот корня варианта, если он был смещён в сборном файле
+  inner.position.set(0, 0, 0);
+  inner.updateMatrixWorld(true);
+
+  const rawBox = new THREE.Box3().setFromObject(inner);
+  if (rawBox.isEmpty()) return null;
+  const rawSize = new THREE.Vector3();
+  rawBox.getSize(rawSize);
+
+  // Выравниваем длину машины строго вдоль оси Z (чтобы yaw = 0 парковал вдоль дороги Север-Юг)
+  if (rawSize.x > rawSize.z * 1.12) {
+    inner.rotation.y += Math.PI / 2;
+  }
+
+  wrapper.updateMatrixWorld(true);
+  const rotBox = new THREE.Box3().setFromObject(wrapper);
+  const rotSize = new THREE.Vector3();
+  rotBox.getSize(rotSize);
+
+  const maxHoriz = Math.max(0.01, rotSize.x, rotSize.z);
+  const s = targetLength / maxHoriz;
+  inner.scale.multiplyScalar(s);
+
+  wrapper.updateMatrixWorld(true);
+  const scaledBox = new THREE.Box3().setFromObject(wrapper);
+  const center = new THREE.Vector3();
+  const finalSize = new THREE.Vector3();
+  scaledBox.getCenter(center);
+  scaledBox.getSize(finalSize);
+
+  // Центрируем геометрию по (0, 0, 0) для точного совпадения с физическим телом CANNON.Box
+  inner.position.x -= center.x;
+  inner.position.y -= center.y;
+  inner.position.z -= center.z;
+
+  wrapper.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (!m) continue;
+        if (m.map) setSRGBTex(m.map);
+      }
+    }
+  });
+
+  return { template: wrapper, size: finalSize };
+}
+
+function loadVehicleVariants(filename, targetLength = 4.6) {
+  const cacheKey = `${filename}|${targetLength}`;
+  if (!vehicleVariantsCache.has(cacheKey)) {
+    const promise = new Promise((resolve) => {
+      envGltfLoader.load(
+        `${MODEL_DIR}${filename}`,
+        (gltf) => {
+          const root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
+          if (!root) {
+            resolve(null);
+            return;
+          }
+          root.updateMatrixWorld(true);
+
+          // Спускаемся к уровню возможных вариантов (например, если в maintenance_vehicles.glb несколько машин в ряд)
+          let container = root;
+          while (container.children.length === 1 && !container.children[0].isMesh && container.children[0].children.length > 0) {
+            container = container.children[0];
+          }
+
+          const candidates = container.children.filter((ch) => {
+            let hasMesh = false;
+            ch.traverse((o) => { if (o.isMesh) hasMesh = true; });
+            return hasMesh;
+          });
+
+          let treatAsPack = false;
+          if (candidates.length >= 2 && candidates.length <= 16) {
+            const boxes = candidates.map((ch) => new THREE.Box3().setFromObject(ch));
+            let separatedPairs = 0;
+            let totalPairs = 0;
+            for (let i = 0; i < boxes.length; i++) {
+              const ci = new THREE.Vector3(), si = new THREE.Vector3();
+              boxes[i].getCenter(ci); boxes[i].getSize(si);
+              for (let j = i + 1; j < boxes.length; j++) {
+                const cj = new THREE.Vector3(), sj = new THREE.Vector3();
+                boxes[j].getCenter(cj); boxes[j].getSize(sj);
+                const distXZ = Math.hypot(ci.x - cj.x, ci.z - cj.z);
+                const minSep = Math.max(si.x, si.z, sj.x, sj.z) * 0.65;
+                totalPairs++;
+                if (distXZ > Math.max(0.4, minSep)) separatedPairs++;
+              }
+            }
+            treatAsPack = totalPairs > 0 && (separatedPairs / totalPairs) >= 0.55;
+          }
+
+          const variants = [];
+          if (treatAsPack) {
+            for (const ch of candidates) {
+              const norm = normalizeVehicleSubtree(ch, targetLength);
+              if (norm) variants.push(norm);
+            }
+          } else {
+            const norm = normalizeVehicleSubtree(root, targetLength);
+            if (norm) variants.push(norm);
+          }
+
+          resolve(variants.length > 0 ? variants : null);
+        },
+        undefined,
+        (err) => {
+          console.warn(`Не удалось загрузить машину ${MODEL_DIR}${filename}, оставлен процедурный fallback:`, err);
+          checkLocalGlbProtocolHint();
+          resolve(null);
+        }
+      );
+    });
+    vehicleVariantsCache.set(cacheKey, promise);
+  }
+  return vehicleVariantsCache.get(cacheKey);
+}
+
+function createFallbackCarVisual(isMaintenance, colorHex) {
+  const g = new THREE.Group();
+  const bodyMat = stdMat(colorHex, 0.42, 0.35);
+  const cabMat = stdMat(isMaintenance ? 0xf2b82e : colorHex, 0.45, 0.30);
+  const darkMat = stdMat(0x23252a, 0.85);
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x7bc8eb, roughness: 0.15, metalness: 0.35 });
+
+  const len = isMaintenance ? 5.0 : 4.4;
+  const wid = isMaintenance ? 2.1 : 1.88;
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(wid, 0.78, len), bodyMat);
+  hull.position.y = -0.18; hull.castShadow = true; hull.receiveShadow = true;
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(wid * 0.88, 0.72, isMaintenance ? 1.85 : 2.15), cabMat);
+  cab.position.set(0, 0.48, isMaintenance ? 1.05 : -0.15); cab.castShadow = true;
+  const win = new THREE.Mesh(new THREE.BoxGeometry(wid * 0.90, 0.48, isMaintenance ? 1.45 : 1.75), glassMat);
+  win.position.set(0, 0.52, isMaintenance ? 1.05 : -0.15);
+  g.add(hull, cab, win);
+
+  const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.28, 12);
+  wheelGeo.rotateZ(Math.PI / 2);
+  for (const sx of [-wid * 0.48, wid * 0.48]) {
+    for (const sz of [-len * 0.32, len * 0.32]) {
+      const w = new THREE.Mesh(wheelGeo, darkMat);
+      w.position.set(sx, -0.48, sz); w.castShadow = true;
+      g.add(w);
+    }
+  }
+  return g;
+}
+
+const VEHICLE_SPAWNS = [
+  // Центральная площадь (рядом со стартом, не мешают спавну хряка и трактору)
+  { file: 'bokaroo_67_-_low-poly_model.glb', x: -12.5, z:  -5.5, yaw:  0.45, len: 4.5, name: 'Бокару-67',   tint: 0xd94436 },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  10.5, z:  13.5, yaw: -0.65, len: 4.5, name: 'Бокару-67',   tint: 0x3b86d9 },
+  { file: 'maintenance_vehicles.glb',        x:  -9.5, z:  15.5, yaw:  0.80, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+
+  // Северная дорога -> Большая ферма
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:   2.6, z: -34.0, yaw:  0.06, len: 4.5, name: 'Бокару-67',   tint: 0xe86b2c },
+  { file: 'maintenance_vehicles.glb',        x:  -2.7, z: -64.0, yaw:  Math.PI - 0.05, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+  { file: 'maintenance_vehicles.glb',        x:   2.7, z:-102.0, yaw:  0.00, len: 5.2, name: 'спецтехнику', tint: 0x4ca65c },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  11.5, z:-132.0, yaw: -0.40, len: 4.5, name: 'Бокару-67',   tint: 0x489c68 },
+
+  // Южная дорога -> Озеро и пляж
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  -2.6, z:  36.0, yaw:  Math.PI, len: 4.5, name: 'Бокару-67', tint: 0xd94436 },
+  { file: 'maintenance_vehicles.glb',        x:   2.7, z:  72.0, yaw:  0.04, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x: -11.0, z: 112.0, yaw:  0.55, len: 4.5, name: 'Бокару-67',   tint: 0x3b86d9 },
+
+  // Восточная дорога -> Стройплощадка
+  { file: 'maintenance_vehicles.glb',        x:  34.0, z:   2.7, yaw:  Math.PI / 2, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  76.0, z:  -2.7, yaw: -Math.PI / 2, len: 4.5, name: 'Бокару-67',   tint: 0xc93b6b },
+  { file: 'maintenance_vehicles.glb',        x: 118.0, z:  -2.5, yaw:  Math.PI / 2 + 0.15, len: 5.2, name: 'спецтехнику', tint: 0xe68b24 },
+  { file: 'maintenance_vehicles.glb',        x: 136.0, z: -24.0, yaw:  0.35, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+
+  // Западная дорога -> Лес и скейт-парк
+  { file: 'bokaroo_67_-_low-poly_model.glb', x: -36.0, z:  -2.7, yaw: -Math.PI / 2, len: 4.5, name: 'Бокару-67',   tint: 0x3b86d9 },
+  { file: 'maintenance_vehicles.glb',        x: -78.0, z:   2.7, yaw:  Math.PI / 2, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:-114.0, z:   7.5, yaw: -Math.PI / 2 - 0.25, len: 4.5, name: 'Бокару-67', tint: 0xd94436 },
+];
+
+// Резервируем площадки под припаркованные машины, чтобы деревья в них не прорастали
+for (const vs of VEHICLE_SPAWNS) {
+  noTreeZones.push({ x: vs.x, z: vs.z, r: 5.0 });
+}
+
+let vehicleSpawnEpoch = 0;
+
+function clearAndSpawnVehicles() {
+  vehicleSpawnEpoch++;
+  const myEpoch = vehicleSpawnEpoch;
+  if (grabbedObj && grabbedObj.kind === 'vehicle') releaseGrabbed(false);
+  for (const v of vehicles) {
+    scene.remove(v.mesh);
+    world.removeBody(v.body);
+  }
+  vehicles.length = 0;
+
+  let maintCounter = 0;
+  for (const spec of VEHICLE_SPAWNS) {
+    const isMaint = spec.file === 'maintenance_vehicles.glb';
+    const variantIdx = isMaint ? (maintCounter++) : 0;
+
+    const visualHolder = new THREE.Group();
+    const fallbackVis = createFallbackCarVisual(isMaint, spec.tint);
+    visualHolder.add(fallbackVis);
+    scene.add(visualHolder);
+
+    const initHalfX = isMaint ? 1.08 : 0.96;
+    const initHalfY = isMaint ? 0.92 : 0.80;
+    const initHalfZ = spec.len * 0.5;
+
+    const body = new CANNON.Body({
+      mass: 68,
+      material: matVehicle,
+      linearDamping: 0.26,
+      angularDamping: 0.34,
+      position: new CANNON.Vec3(spec.x, initHalfY + 0.05, spec.z),
+    });
+    body.quaternion.setFromEuler(0, spec.yaw, 0);
+    body.addShape(new CANNON.Box(new CANNON.Vec3(initHalfX, initHalfY, initHalfZ)));
+    body.sleepSpeedLimit = 0.22;
+    body.sleepTimeLimit = 1.0;
+
+    const vehObj = {
+      kind: 'vehicle',
+      name: spec.name,
+      mesh: visualHolder,
+      body,
+      hitCooldown: 0,
+      pushCooldown: 0,
+      halfY: initHalfY,
+      startSpec: spec,
+    };
+    body.userData = { vehicleObj: vehObj };
+
+    // Реакция на толчок/сдвиг хряком и столкновение с другими объектами
+    body.addEventListener('collide', (e) => {
+      const other = e.body;
+      if (other === playerBody && !inTractor) {
+        const pSpd = playerBody.velocity.length();
+        if (pSpd > 1.8) {
+          markByPlayer(body, 3.8);
+          body.wakeUp();
+          const pushDir = body.position.vsub(playerBody.position);
+          pushDir.y = 0;
+          if (pushDir.lengthSquared() > 0.001) pushDir.normalize();
+          const shove = Math.min(260, pSpd * (isRagdoll ? 26 : 19));
+          body.applyImpulse(new CANNON.Vec3(pushDir.x * shove, isRagdoll ? 75 : 35, pushDir.z * shove));
+          if (vehObj.pushCooldown <= 0) {
+            vehObj.pushCooldown = 1.15;
+            sfx.carHit();
+            spawnBurst(body.position, 0xffe44a, 6, 6, 0.9);
+            if (isRagdoll) addTrick('Рэгдолл-ДТП!', 240, body.position, '#ffbe3b');
+            else addTrick(`Сдвинул ${vehObj.name}!`, 140, body.position, '#75e6ff');
+          }
+        }
+      } else if (other === tractor.body && inTractor) {
+        markByPlayer(body, 4.0);
+      } else if (isBodyByPlayer(other)) {
+        const impact = Math.abs(e.contact.getImpactVelocityAlongNormal());
+        if (impact > 2.5) markByPlayer(body, 3.5);
+      }
+    });
+
+    world.addBody(body);
+    vehicles.push(vehObj);
+
+    // Асинхронно подгружаем 3D-модель .glb и подгоняем её в контейнер + точный коллайдер
+    loadVehicleVariants(spec.file, spec.len).then((variants) => {
+      if (!variants || myEpoch !== vehicleSpawnEpoch) return;
+      const picked = variants[variantIdx % variants.length];
+      if (!picked) return;
+
+      const modelClone = picked.template.clone(true);
+      visualHolder.remove(fallbackVis);
+      visualHolder.add(modelClone);
+
+      const hx = Math.max(0.55, picked.size.x * 0.5);
+      const hy = Math.max(0.45, picked.size.y * 0.5);
+      const hz = Math.max(0.70, picked.size.z * 0.5);
+      const oldHy = vehObj.halfY;
+      vehObj.halfY = hy;
+
+      body.shapes.length = 0;
+      body.shapeOffsets.length = 0;
+      body.shapeOrientations.length = 0;
+      body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
+      body.updateMassProperties();
+      body.updateBoundingRadius();
+      if (Math.abs(body.position.y - (oldHy + 0.05)) < 0.6) {
+        body.position.y = hy + 0.05;
+      }
+    });
+  }
+}
+
 // 5. ТРАКТОР (МАКС. СКОРОСТЬ 32 + НИТРО/УСКОРЕНИЕ!)
 // ----------------------------------------------------------------------------
 function buildTractor(startX, startZ) {
@@ -2836,6 +3536,20 @@ function buildTractor(startX, startZ) {
         sfx.crate();
         spawnBurst(other.position, 0xd49b50, 6, 7, 1.0, true);
         if (causedByPlayer) addTrick('Тракторный погром', 150, other.position);
+      }
+    } else if (other.userData && other.userData.vehicleObj && speed >= 3.0) {
+      const v = other.userData.vehicleObj;
+      if (causedByPlayer) markByPlayer(other, 4.0);
+      if (v.hitCooldown <= 0) {
+        v.hitCooldown = 0.75;
+        const dir = other.position.vsub(body.position); dir.y = 0;
+        if (dir.lengthSquared() > 0.001) dir.normalize();
+        other.wakeUp();
+        other.applyImpulse(new CANNON.Vec3(dir.x * speed * 42, speed * 14 + 130, dir.z * speed * 42));
+        other.angularVelocity.set((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 5, (Math.random() - 0.5) * 4);
+        sfx.carHit();
+        spawnBurst(other.position, 0xffe44a, 10, 9);
+        if (causedByPlayer) addTrick('Тракторный таран!', 260, other.position, '#ff9640');
       }
     } else if (other.userData && other.userData.npc && speed >= 3.0) {
       const dir = other.position.vsub(body.position); dir.y = 0; dir.normalize();
@@ -2976,6 +3690,16 @@ function toggleStickySnout() {
       bestScore = score;
       best = { kind: 'npc', name: PIG_LABELS[npc.breed] || 'Хряк', body: npc.body, npc };
     }
+  }
+
+  for (const v of vehicles) {
+    const dx = v.body.position.x - origin.x, dy = v.body.position.y - origin.y, dz = v.body.position.z - origin.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist > 5.8) continue;
+    const dot = (dx * fwd.x + dz * fwd.z) / Math.max(0.1, Math.hypot(dx, dz));
+    if (dot < -0.15 && dist > 3.0) continue;
+    const score = dist - dot * 1.3;
+    if (score < bestScore) { bestScore = score; best = v; }
   }
 
   if (!best) {
@@ -3320,6 +4044,26 @@ function doHeadbutt() {
     }
   }
 
+  for (const v of vehicles) {
+    const toCar = new THREE.Vector3(v.body.position.x - origin.x, 0, v.body.position.z - origin.z);
+    const dist = toCar.length();
+    if (dist < 5.6 && (toCar.clone().normalize().dot(fwd) > 0.16 || dist < 3.1)) {
+      hitCount++;
+      markByPlayer(v.body, 4.0);
+      v.body.wakeUp();
+      v.body.applyImpulse(new CANNON.Vec3(fwd.x * 620, 290, fwd.z * 620));
+      v.body.angularVelocity.set(
+        fwd.z * 3.8 + (Math.random() - 0.5) * 2.5,
+        (Math.random() - 0.5) * 4.5,
+        -fwd.x * 3.8 + (Math.random() - 0.5) * 2.5
+      );
+      sfx.carHit();
+      if (Math.random() < 0.45) sfx.horn();
+      spawnBurst(v.body.position, 0xffe44a, 10, 9);
+      addTrick(`Боднул ${v.name}!`, 220, v.body.position, '#ffd970');
+    }
+  }
+
   const toTr = new THREE.Vector3(tractor.body.position.x - origin.x, 0, tractor.body.position.z - origin.z);
   if (toTr.length() < 4.8 && toTr.normalize().dot(fwd) > 0.2) {
     markByPlayer(tractor.body, 3.0);
@@ -3506,6 +4250,18 @@ function updateRadarAndZone() {
     }
   }
 
+  // Машины вдоль дорог и на площади (оранжевые метки на радаре)
+  radarCtx.fillStyle = '#ff8c42';
+  for (const v of vehicles) {
+    const vx = (v.body.position.x - ref.x) * scale;
+    const vz = (v.body.position.z - ref.z) * scale;
+    if (vx * vx + vz * vz < 38 * 38) {
+      radarCtx.beginPath();
+      radarCtx.arc(vx, vz, 2.0, 0, Math.PI * 2);
+      radarCtx.fill();
+    }
+  }
+
   // Позиция трактора (синий маркер с белой обводкой)
   if (!inTractor) {
     const tx = (tractor.body.position.x - ref.x) * scale;
@@ -3572,6 +4328,7 @@ function lerpAngle(currentYaw, targetAngle, t) {
 preloadHryakModel();
 buildWorld();
 clearAndSpawnProps();
+clearAndSpawnVehicles();
 clearAndSpawnBreakables();
 spawnGoldenAcorns();
 const tractor = buildTractor(-3, -2);
@@ -3801,6 +4558,7 @@ function resetSandbox() {
   if (grabbedObj) releaseGrabbed(false);
   if (isRagdoll) toggleRagdoll();
   clearAndSpawnProps();
+  clearAndSpawnVehicles();
   clearAndSpawnBreakables();
   tractor.body.position.set(-3, 1.3, -2);
   tractor.body.velocity.set(0, 0, 0);
@@ -4245,6 +5003,19 @@ function animate() {
     }
     p.mesh.position.copy(p.body.position);
     p.mesh.quaternion.copy(p.body.quaternion);
+  }
+
+  // Интерактивные машины: синхронизация физики и авто-сон дальше 85м
+  for (const v of vehicles) {
+    if (v.hitCooldown > 0) v.hitCooldown -= dt;
+    if (v.pushCooldown > 0) v.pushCooldown -= dt;
+    const dist = Math.hypot(v.body.position.x - refPos.x, v.body.position.z - refPos.z);
+    if (dist > 85 && v !== grabbedObj) {
+      if (v.body.sleepState !== CANNON.Body.SLEEPING) v.body.sleep();
+      continue;
+    }
+    v.mesh.position.copy(v.body.position);
+    v.mesh.quaternion.copy(v.body.quaternion);
   }
 
   for (let i = debrisList.length - 1; i >= 0; i--) {
