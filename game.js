@@ -405,9 +405,10 @@ if ('SRGBColorSpace' in THREE) renderer.outputColorSpace = THREE.SRGBColorSpace;
 else renderer.outputEncoding = THREE.sRGBEncoding;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0xcfeaff, 0.0028);
+// Лёгкий атмосферный туман на горизонте — мягко окутывает дальние горные хребты
+scene.fog = new THREE.FogExp2(0xd6ecff, 0.0022);
 
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.22, 360);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.22, 720);
 
 // Градиентное небо + солнце
 const sunDir = new THREE.Vector3(0.52, 0.68, 0.42).normalize();
@@ -447,7 +448,7 @@ const skyMat = new THREE.ShaderMaterial({
     }
   `,
 });
-const skyDome = new THREE.Mesh(new THREE.SphereGeometry(320, 24, 16), skyMat);
+const skyDome = new THREE.Mesh(new THREE.SphereGeometry(620, 24, 16), skyMat);
 scene.add(skyDome);
 
 // Лёгкая процедурная карта окружения (PMREM) — обеспечивает реальную работу envMapIntensity и отражения на стёклах
@@ -675,6 +676,65 @@ function spawnExplosionFlash(pos) {
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// РЕЛЬЕФ ДОЛИНЫ И ЛЕСА: getTerrainHeight(x, z)
+// В деревне, на дорогах и в биомах — идеально ровно (y = 0),
+// а в долине и лесу — плавные холмы высотой 4–12 метров.
+// ----------------------------------------------------------------------------
+const TERRAIN_SIZE = WORLD_SIZE + 40; // 540x540 (покрывает всю долину и стыкуется с горами)
+const TERRAIN_SEGMENTS = 128;         // Сетка 128x128 сегментов (общая для рендера и CANNON.Heightfield)
+
+function terrainSmoothstep(edge0, edge1, x) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+function getTerrainHeight(x, z) {
+  let flatMask = 1.0;
+
+  // 1. Магистральные дороги (крест 400м): ровное полотно + мягкие обочины
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  if (az < 205) {
+    const mRoadX = terrainSmoothstep(12.0, 28.0, ax);
+    if (mRoadX < flatMask) flatMask = mRoadX;
+  }
+  if (ax < 205) {
+    const mRoadZ = terrainSmoothstep(12.0, 28.0, az);
+    if (mRoadZ < flatMask) flatMask = mRoadZ;
+  }
+
+  // 2. Ровные площадки под деревней, домами, фермой, стройкой, озером и скейт-парком (y = 0)
+  const flatHubs = [
+    [0,    0,    60, 84], // Центральная деревня и все дома
+    [0,   -140,  46, 68], // Большая ферма
+    [140,  0,    48, 70], // Стройплощадка
+    [0,    146,  52, 74], // Озеро и пляж
+    [-140, 0,    48, 70], // Скейт-парк и лесные дома
+  ];
+  for (let i = 0; i < flatHubs.length; i++) {
+    const h = flatHubs[i];
+    const dist = Math.hypot(x - h[0], z - h[1]);
+    if (dist < h[3]) {
+      const m = terrainSmoothstep(h[2], h[3], dist);
+      if (m < flatMask) flatMask = m;
+      if (flatMask <= 0.0001) return 0;
+    }
+  }
+
+  // 3. Многослойные плавные холмы в долине и лесу высотой ~4–12 метров
+  const n1 = Math.sin(x * 0.022 + 0.7) * Math.cos(z * 0.020 - 0.4);
+  const n2 = Math.sin(x * 0.036 + z * 0.028 + 1.5) * 0.55;
+  const n3 = Math.cos(x * 0.017 - z * 0.031 + 2.3) * 0.45;
+  const n4 = Math.sin(x * 0.062 - z * 0.054) * 0.22;
+
+  const combined = (n1 + n2 + n3 + n4 + 2.15) / 4.30;
+  const clamped = Math.max(0.0, Math.min(1.0, combined));
+  const hillHeight = 3.8 + Math.pow(clamped, 1.12) * 8.4; // ~4–12 м
+
+  return hillHeight * flatMask;
+}
+
 // 1. ОТКРЫТЫЙ МИР 500x500: 5 ТЕМАТИЧЕСКИХ БИОМОВ + ПУЛ КОЛЛАЙДЕРОВ ДЕРЕВЬЕВ
 // ----------------------------------------------------------------------------
 const trampolines = [];
@@ -706,7 +766,7 @@ function updateTreeColliderPool() {
     const dz = tp.z - ref.z;
     if (dx * dx + dz * dz < 900) { // 30^2 = 900
       const b = treeColliderPool[slot++];
-      b.position.set(tp.x, 2.2, tp.z);
+      b.position.set(tp.x, getTerrainHeight(tp.x, tp.z) + 2.2, tp.z);
       b.collisionResponse = true;
     }
   }
@@ -2097,35 +2157,222 @@ function buildInstancedPlantGroup(variants, transforms, { castShadow = false, re
   return group;
 }
 
+// Строит по периметру карты кольцо высоких остроконечных горных хребтов
+// с раскраской вершин (Vertex Colors): зелёная трава у подножия, серо-коричневые скалы
+// с картой рельефа Rock030_1K-JPG_NormalGL.jpg в середине и белый снег на пиках.
+function buildMountainRidgeRing() {
+  const angleSegs = 180;
+  const radialSegs = 22;
+  const vertCount = (angleSegs + 1) * (radialSegs + 1);
+  const positions = new Float32Array(vertCount * 3);
+  const uvs = new Float32Array(vertCount * 2);
+  const colors = new Float32Array(vertCount * 3);
+  const indices = [];
+
+  const ridged = (v) => 1.0 - Math.abs(Math.sin(v));
+
+  let ptr = 0;
+  for (let ai = 0; ai <= angleSegs; ai++) {
+    const u = ai / angleSegs;
+    const theta = u * Math.PI * 2;
+    const ca = Math.cos(theta);
+    const sa = Math.sin(theta);
+    // Контур скруглённого квадрата, плотно огибающий карту 500x500
+    const sqScale = 1.0 / Math.pow(Math.pow(Math.abs(ca), 6) + Math.pow(Math.abs(sa), 6), 1 / 6);
+
+    // Остроконечный многооктавный силуэт хребта по кругу
+    const r1 = Math.pow(ridged(theta * 7.0 + 0.6), 1.7);
+    const r2 = Math.pow(ridged(theta * 15.0 + 2.1), 1.9);
+    const r3 = Math.pow(ridged(theta * 29.0 + 4.3), 2.1);
+    const r4 = Math.pow(ridged(theta * 51.0 + 1.4), 2.0);
+    const peakFactor = 0.42 + 0.58 * (0.48 * r1 + 0.28 * r2 + 0.16 * r3 + 0.08 * r4);
+
+    for (let ri = 0; ri <= radialSegs; ri++) {
+      const t = ri / radialSegs;
+      const dist = (HALF_WORLD - 4.0 + t * 130.0) * sqScale;
+      const x = ca * dist;
+      const z = sa * dist;
+
+      let y;
+      if (ri === 0) {
+        y = getTerrainHeight(x, z) - 1.2;
+      } else if (ri === radialSegs) {
+        y = -8.0;
+      } else {
+        const envMain = Math.pow(Math.sin(Math.min(1.0, t / 0.88) * Math.PI), 1.25);
+        const ridgeCross = Math.pow(ridged(t * 7.5 + theta * 11.0 + 1.2), 1.5);
+        const spur = 0.72 + 0.36 * ridgeCross;
+        const baseEdgeH = getTerrainHeight(ca * (HALF_WORLD - 4.0) * sqScale, sa * (HALF_WORLD - 4.0) * sqScale);
+        let rawY = envMain * spur * (48.0 + peakFactor * 64.0);
+        if (t < 0.16) {
+          const blend = terrainSmoothstep(0.0, 0.16, t);
+          y = baseEdgeH * (1 - blend) + rawY * blend;
+        } else {
+          y = rawY;
+        }
+      }
+
+      positions[ptr * 3]     = x;
+      positions[ptr * 3 + 1] = y;
+      positions[ptr * 3 + 2] = z;
+
+      uvs[ptr * 2]     = u * 38.0;
+      uvs[ptr * 2 + 1] = t * 7.0;
+      ptr++;
+    }
+  }
+
+  // Порядок обхода вершин так, чтобы нормали смотрели вверх и внутрь долины
+  const stride = radialSegs + 1;
+  for (let ai = 0; ai < angleSegs; ai++) {
+    for (let ri = 0; ri < radialSegs; ri++) {
+      const a00 = ai * stride + ri;
+      const a10 = (ai + 1) * stride + ri;
+      const a01 = a00 + 1;
+      const a11 = a10 + 1;
+      indices.push(a00, a10, a01);
+      indices.push(a10, a11, a01);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  // Раскраска вершин (Vertex Colors): зелёная трава у подножия -> серо-коричневые скалы -> белый снег на пиках
+  const normAttr = geo.attributes.normal;
+  const colGrassLow  = new THREE.Color(0x528f3d);
+  const colGrassHigh = new THREE.Color(0x417332);
+  const colRockDark  = new THREE.Color(0x5d564f);
+  const colRockWarm  = new THREE.Color(0x7a6e62);
+  const colSnow      = new THREE.Color(0xf6f9ff);
+  const tmpC = new THREE.Color();
+  const rockC = new THREE.Color();
+
+  for (let i = 0; i < vertCount; i++) {
+    const vx = positions[i * 3];
+    const vy = positions[i * 3 + 1];
+    const vz = positions[i * 3 + 2];
+    const ny = Math.max(0, Math.min(1, normAttr.getY(i)));
+    const ang = Math.atan2(vz, vx);
+
+    // Плавный переход травы в скалы по высоте и крутизне склона
+    const rockNoise = Math.sin(vx * 0.045 + vz * 0.038) * 0.5 + 0.5;
+    rockC.copy(colRockDark).lerp(colRockWarm, rockNoise);
+
+    const grassShade = terrainSmoothstep(0.0, 18.0, vy);
+    tmpC.copy(colGrassLow).lerp(colGrassHigh, grassShade);
+
+    const hRockT = terrainSmoothstep(10.0, 24.0, vy);
+    const slopeRockT = terrainSmoothstep(0.84, 0.58, ny);
+    const rockBlend = Math.min(1.0, Math.max(hRockT, slopeRockT * 0.92));
+    tmpC.lerp(rockC, rockBlend);
+
+    // Неровная снеговая линия + скальные выступы на очень крутых обрывах
+    const snowLine = 46.0 + Math.sin(ang * 9.0 + 0.4) * 7.5 + Math.cos(ang * 21.0 - 0.8) * 4.5;
+    let snowBlend = terrainSmoothstep(snowLine - 6.0, snowLine + 11.0, vy);
+    // Очень крутые скалы (ny < 0.45) удерживают меньше снега
+    snowBlend *= terrainSmoothstep(0.32, 0.62, ny);
+    // Самые высокие вершины (> 72 м) всегда заснежены
+    snowBlend = Math.max(snowBlend, terrainSmoothstep(68.0, 82.0, vy));
+    tmpC.lerp(colSnow, Math.min(1.0, snowBlend));
+
+    colors[i * 3]     = tmpC.r;
+    colors[i * 3 + 1] = tmpC.g;
+    colors[i * 3 + 2] = tmpC.b;
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const mountainMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness: 0.90,
+    metalness: 0.04,
+    envMapIntensity: 0.9,
+  });
+
+  // Карта рельефа скал Rock030_1K-JPG_NormalGL.jpg (+ шероховатость Rock030_1K-JPG_Roughness.jpg)
+  Promise.all([
+    loadCachedRawTexture(`${TEXTURE_DIR}Rock030_1K-JPG_NormalGL.jpg`),
+    loadCachedRawTexture(`${TEXTURE_DIR}Rock030_1K-JPG_Roughness.jpg`),
+  ]).then(([rawNorm, rawRough]) => {
+    let changed = false;
+    if (rawNorm) {
+      const nTex = configurePBRTexture(rawNorm, 1, 1, false);
+      if (nTex) {
+        mountainMat.normalMap = nTex;
+        mountainMat.normalScale = new THREE.Vector2(1.15, 1.15);
+        changed = true;
+      }
+    }
+    if (rawRough) {
+      const rTex = configurePBRTexture(rawRough, 1, 1, false);
+      if (rTex) {
+        mountainMat.roughnessMap = rTex;
+        changed = true;
+      }
+    }
+    if (changed) mountainMat.needsUpdate = true;
+  });
+
+  const mountainMesh = new THREE.Mesh(geo, mountainMat);
+  mountainMesh.name = 'mountain_ridge_ring';
+  mountainMesh.castShadow = false;
+  mountainMesh.receiveShadow = true;
+  scene.add(mountainMesh);
+}
+
 function buildWorld() {
-  // Основная земля
+  // 1) Рельефная сетка земли (128x128 сегментов) с точным физическим CANNON.Heightfield
+  const elemSize = TERRAIN_SIZE / TERRAIN_SEGMENTS;
+  const halfT = TERRAIN_SIZE / 2;
+  const hfMatrix = [];
+  for (let xi = 0; xi <= TERRAIN_SEGMENTS; xi++) {
+    const row = [];
+    const wx = -halfT + xi * elemSize;
+    for (let yi = 0; yi <= TERRAIN_SEGMENTS; yi++) {
+      const wz = halfT - yi * elemSize;
+      row.push(getTerrainHeight(wx, wz));
+    }
+    hfMatrix.push(row);
+  }
   const groundBody = new CANNON.Body({ mass: 0, material: matWorld });
-  groundBody.addShape(new CANNON.Plane());
+  groundBody.addShape(new CANNON.Heightfield(hfMatrix, { elementSize: elemSize }));
+  groundBody.position.set(-halfT, 0, halfT);
   groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
   world.addBody(groundBody);
 
-  const grassMat = loadPBRMaterial('Grass004_1K-JPG', 75, 75, {
+  const grassMat = loadPBRMaterial('Grass004_1K-JPG', 72, 72, {
     fallbackMap: texGrass,
     fallbackRoughness: 0.92,
-    roughness: 0.95,
+    roughness: 0.94,
     useNormal: true,
-    useRoughness: false,
-    normalScale: 0.5,
+    useRoughness: true,
+    normalScale: 0.65,
   });
-  const grass = new THREE.Mesh(
-    new THREE.PlaneGeometry(WORLD_SIZE + 180, WORLD_SIZE + 180),
-    grassMat
-  );
-  grass.rotation.x = -Math.PI / 2;
+  const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, TERRAIN_SEGMENTS, TERRAIN_SEGMENTS);
+  terrainGeo.rotateX(-Math.PI / 2);
+  const tPos = terrainGeo.attributes.position;
+  for (let i = 0; i < tPos.count; i++) {
+    tPos.setY(i, getTerrainHeight(tPos.getX(i), tPos.getZ(i)));
+  }
+  tPos.needsUpdate = true;
+  terrainGeo.computeVertexNormals();
+
+  const grass = new THREE.Mesh(terrainGeo, grassMat);
+  grass.name = 'terrain_ground';
   grass.receiveShadow = true;
   scene.add(grass);
 
-  // Невидимые физические границы долины 500x500 (чтобы не вылететь за край мира)
+  // Невидимые физические границы долины 500x500 (высокие, с запасом над холмами)
   const borderDefs = [
-    [0, 4.0, -HALF_WORLD, WORLD_SIZE + 10, 8, 2.0],
-    [0, 4.0,  HALF_WORLD, WORLD_SIZE + 10, 8, 2.0],
-    [-HALF_WORLD, 4.0, 0, 2.0, 8, WORLD_SIZE + 10],
-    [ HALF_WORLD, 4.0, 0, 2.0, 8, WORLD_SIZE + 10],
+    [0, 18.0, -HALF_WORLD, WORLD_SIZE + 10, 36, 2.0],
+    [0, 18.0,  HALF_WORLD, WORLD_SIZE + 10, 36, 2.0],
+    [-HALF_WORLD, 18.0, 0, 2.0, 36, WORLD_SIZE + 10],
+    [ HALF_WORLD, 18.0, 0, 2.0, 36, WORLD_SIZE + 10],
   ];
   for (const [x, y, z, w, h, dep] of borderDefs) {
     const b = new CANNON.Body({ mass: 0, material: matWorld, position: new CANNON.Vec3(x, y, z) });
@@ -2133,36 +2380,20 @@ function buildWorld() {
     world.addBody(b);
   }
 
-  // Плотная естественная гряда зелёных холмов, скал и леса по всему периметру карты 500x500
-  const hillMats = [
-    stdMat(0x5eb348, 0.90),
-    stdMat(0x4b9c3c, 0.90),
-    stdMat(0x3b8531, 0.92),
-  ];
-  const rimPts = [];
-  const stepsPerSide = 18;
-  for (let s = 0; s < stepsPerSide; s++) {
-    const t = -HALF_WORLD + (s / stepsPerSide) * WORLD_SIZE;
-    rimPts.push([t, -HALF_WORLD - 12], [t, HALF_WORLD + 12], [-HALF_WORLD - 12, t], [HALF_WORLD + 12, t]);
-  }
-  rimPts.forEach(([bx, bz], idx) => {
-    const jitterX = Math.sin(idx * 12.9898) * 9;
-    const jitterZ = Math.cos(idx * 78.233) * 9;
-    const rad = 28 + (idx % 4) * 7;
-    const h = 16 + (idx % 5) * 4.5;
-    const hill = new THREE.Mesh(
-      new THREE.SphereGeometry(rad, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.5),
-      hillMats[idx % hillMats.length]
-    );
-    hill.scale.set(1.25, h / rad, 1.25);
-    hill.position.set(bx + jitterX, -0.6, bz + jitterZ);
-    scene.add(hill);
-  });
+  // Кольцо высоких остроконечных горных хребтов по краям карты (вместо мультяшных полусфер)
+  buildMountainRidgeRing();
 
-  // Скалы и валуны у подножия гряды по периметру (InstancedMesh)
+  // Скалы и валуны у подножия горного хребта по периметру с PBR-текстурой Rock030_1K-JPG
   const RIM_ROCK_COUNT = isMobile ? 110 : 160;
   const rimRockGeo = new THREE.DodecahedronGeometry(1.0, 0);
-  const rimRockInst = new THREE.InstancedMesh(rimRockGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92 }), RIM_ROCK_COUNT);
+  const rimRockMat = loadPBRMaterial('Rock030_1K-JPG', 2, 2, {
+    fallbackRoughness: 0.92,
+    roughness: 0.90,
+    useNormal: true,
+    useRoughness: true,
+    normalScale: 0.85,
+  });
+  const rimRockInst = new THREE.InstancedMesh(rimRockGeo, rimRockMat, RIM_ROCK_COUNT);
   const rimDummy = new THREE.Object3D();
   const rimCol = new THREE.Color();
   for (let i = 0; i < RIM_ROCK_COUNT; i++) {
@@ -2172,20 +2403,21 @@ function buildWorld() {
     const rx = side === 0 ? along : (side === 1 ? along : (side === 2 ? -offset : offset));
     const rz = side === 0 ? -offset : (side === 1 ? offset : along);
     const sc = 2.0 + Math.random() * 2.6;
-    rimDummy.position.set(rx, sc * 0.42, rz);
+    const ry = getTerrainHeight(rx, rz);
+    rimDummy.position.set(rx, ry + sc * 0.35, rz);
     rimDummy.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
     rimDummy.scale.set(sc * 1.2, sc * 0.85, sc);
     rimDummy.updateMatrix();
     rimRockInst.setMatrixAt(i, rimDummy.matrix);
-    const gShade = 0.46 + Math.random() * 0.18;
-    rimCol.setRGB(gShade + 0.04, gShade + 0.03, gShade);
+    const gShade = 0.78 + Math.random() * 0.22;
+    rimCol.setRGB(gShade, gShade * 0.98, gShade * 0.95);
     rimRockInst.setColorAt(i, rimCol);
   }
   rimRockInst.instanceMatrix.needsUpdate = true;
   if (rimRockInst.instanceColor) rimRockInst.instanceColor.needsUpdate = true;
   scene.add(rimRockInst);
 
-  // Густая лесная опушка вдоль границ карты: заменяем конусные деревья на ./models/pine_tree_low-poly.glb
+  // Густая лесная опушка вдоль границ карты: ./models/pine_tree_low-poly.glb с привязкой к рельефу
   const RIM_TREE_COUNT = isMobile ? 110 : 165;
   const rimTreeTransforms = [];
   for (let i = 0; i < RIM_TREE_COUNT; i++) {
@@ -2198,7 +2430,7 @@ function buildWorld() {
     const wScale = hScale * (0.85 + Math.random() * 0.25);
     rimTreeTransforms.push({
       x: tx,
-      y: 0,
+      y: getTerrainHeight(tx, tz) - 0.25,
       z: tz,
       rotY: Math.random() * Math.PI * 2,
       sx: wScale,
@@ -2220,7 +2452,7 @@ function buildWorld() {
     const rimCrownInst = new THREE.InstancedMesh(rimCrownGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.84 }), RIM_TREE_COUNT);
     rimTreeTransforms.forEach((t, i) => {
       const sc = t.sy / 9.0;
-      rimDummy.position.set(t.x, 0, t.z);
+      rimDummy.position.set(t.x, t.y, t.z);
       rimDummy.rotation.set(0, t.rotY, 0);
       rimDummy.scale.set(sc, sc, sc);
       rimDummy.updateMatrix();
@@ -3009,11 +3241,14 @@ function buildWorld() {
   // 1) КАМНИ (180 шт. через InstancedMesh — остаются всегда как природный декор)
   const ROCK_COUNT = isMobile ? 140 : 210;
   const rockGeo = new THREE.DodecahedronGeometry(0.35, 0);
-  const rockInst = new THREE.InstancedMesh(
-    rockGeo,
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
-    ROCK_COUNT
-  );
+  const rockInstMat = loadPBRMaterial('Rock030_1K-JPG', 1, 1, {
+    fallbackRoughness: 0.90,
+    roughness: 0.88,
+    useNormal: true,
+    useRoughness: true,
+    normalScale: 0.75,
+  });
+  const rockInst = new THREE.InstancedMesh(rockGeo, rockInstMat, ROCK_COUNT);
   rockInst.castShadow = !isMobile; rockInst.receiveShadow = true;
 
   let placed = 0, tries = 0;
@@ -3023,7 +3258,7 @@ function buildWorld() {
     const z = (Math.random() - 0.5) * (WORLD_SIZE - 16);
     if (!isClearGround(x, z)) continue;
     const s = 0.55 + Math.random() * 1.25;
-    dummy.position.set(x, s * 0.16, z);
+    dummy.position.set(x, getTerrainHeight(x, z) + s * 0.12, z);
     dummy.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
     dummy.scale.set(s * 1.25, s * 0.72, s);
     dummy.updateMatrix();
@@ -3060,7 +3295,7 @@ function buildWorld() {
       const z = cnt < 40 ? ((Math.random() - 0.5) * 240) : (Math.random() - 0.5) * (WORLD_SIZE - 24);
       if (!isClearGround(x, z)) continue;
       const s = 0.85 + Math.random() * 0.55;
-      dummy.position.set(x, 0, z);
+      dummy.position.set(x, getTerrainHeight(x, z) - 0.15, z);
       dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
       dummy.scale.set(s, s * (0.9 + Math.random() * 0.35), s);
       dummy.updateMatrix();
@@ -3091,7 +3326,7 @@ function buildWorld() {
       const x = (Math.random() - 0.5) * (WORLD_SIZE - 14);
       const z = (Math.random() - 0.5) * (WORLD_SIZE - 14);
       if (!isClearGround(x, z)) continue;
-      dummy.position.set(x, 0, z);
+      dummy.position.set(x, getTerrainHeight(x, z) - 0.04, z);
       dummy.rotation.set((Math.random() - 0.5) * 0.25, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.25);
       const s = 0.7 + Math.random() * 0.9;
       dummy.scale.set(s * 1.2, s * (0.8 + Math.random() * 0.6), s * 1.2);
@@ -3117,7 +3352,7 @@ function buildWorld() {
       const x = (Math.random() - 0.5) * (WORLD_SIZE - 14);
       const z = (Math.random() - 0.5) * (WORLD_SIZE - 14);
       if (!isClearGround(x, z)) continue;
-      const h = 0.14 + Math.random() * 0.14;
+      const h = getTerrainHeight(x, z) + 0.14 + Math.random() * 0.14;
       const s = 0.75 + Math.random() * 0.65;
       dummy.position.set(x, h, z);
       dummy.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
@@ -3223,7 +3458,7 @@ function buildWorld() {
       pineGroup.name = 'pine_trees_group';
       for (const sp of pineSpecs) {
         const clone = pineTemplate.clone(true);
-        clone.position.set(sp.x, 0, sp.z);
+        clone.position.set(sp.x, getTerrainHeight(sp.x, sp.z) - 0.18, sp.z);
         clone.rotation.y = sp.rotY;
         clone.scale.set(sp.s, sp.sy, sp.s);
         pineGroup.add(clone);
@@ -3247,7 +3482,7 @@ function buildWorld() {
       const w = h * (0.85 + Math.random() * 0.35);
       transforms.push({
         x: pt.x,
-        y: 0,
+        y: getTerrainHeight(pt.x, pt.z) - 0.05,
         z: pt.z,
         rotY: Math.random() * Math.PI * 2,
         tiltX: (Math.random() - 0.5) * 0.12,
@@ -3275,7 +3510,7 @@ function buildWorld() {
       const w = h * (0.9 + Math.random() * 0.25);
       transforms.push({
         x: pt.x,
-        y: 0,
+        y: getTerrainHeight(pt.x, pt.z) - 0.05,
         z: pt.z,
         rotY: Math.random() * Math.PI * 2,
         tiltX: (Math.random() - 0.5) * 0.10,
@@ -3315,7 +3550,7 @@ function buildWorld() {
       const len = 1.45 + Math.random() * 1.45;
       transforms.push({
         x,
-        y: -0.02,
+        y: getTerrainHeight(x, z) - 0.04,
         z,
         rotY: Math.random() * Math.PI * 2,
         tiltX: (Math.random() - 0.5) * 0.14,
@@ -3416,15 +3651,16 @@ function clearAndSpawnBreakables() {
   const redBoxMat = stdMat(0xd9362b, 0.45, 0.25);
 
   function registerBreakable(kind, group, x, y, z, yaw, halfExtents) {
-    group.position.set(x, 0, z); group.rotation.y = yaw;
+    const gy = getTerrainHeight(x, z);
+    group.position.set(x, gy, z); group.rotation.y = yaw;
     group.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(group);
 
-    const sensorBody = new CANNON.Body({ mass: 0, material: matWorld, position: new CANNON.Vec3(x, y, z) });
+    const sensorBody = new CANNON.Body({ mass: 0, material: matWorld, position: new CANNON.Vec3(x, gy + y, z) });
     sensorBody.quaternion.setFromEuler(0, yaw, 0);
     sensorBody.addShape(new CANNON.Box(halfExtents));
 
-    const brk = { kind, group, sensorBody, pos: new THREE.Vector3(x, y, z), broken: false };
+    const brk = { kind, group, sensorBody, pos: new THREE.Vector3(x, gy + y, z), broken: false };
     sensorBody.userData = { breakable: brk };
 
     sensorBody.addEventListener('collide', (e) => {
@@ -3539,8 +3775,9 @@ function spawnGoldenAcorns() {
   ];
 
   acornLocations.forEach((loc, idx) => {
+    const worldY = getTerrainHeight(loc.x, loc.z) + loc.y;
     const g = new THREE.Group();
-    g.position.set(loc.x, loc.y, loc.z);
+    g.position.set(loc.x, worldY, loc.z);
 
     const nut = new THREE.Mesh(new THREE.SphereGeometry(0.45, 14, 12), nutMat);
     nut.scale.set(0.88, 1.25, 0.88);
@@ -3555,7 +3792,7 @@ function spawnGoldenAcorns() {
 
     g.add(nut, tip, cap, stem, halo);
     scene.add(g);
-    const acObj = { id: idx, group: g, halo, baseY: loc.y, collected: false };
+    const acObj = { id: idx, group: g, halo, baseY: worldY, collected: false };
     goldenAcorns.push(acObj);
     if (idx === 3 || idx === 7) {
       roofHeightHooks.set(idx, (newY) => {
@@ -3731,8 +3968,9 @@ function spawnStaticWorldModels() {
     const grp = new THREE.Group();
     grp.name = 'static_boulders';
     for (const sp of BOULDER_SPOTS) {
+      const gy = getTerrainHeight(sp.x, sp.z);
       const clone = tpl.template.clone(true);
-      clone.position.set(sp.x, -0.08, sp.z);
+      clone.position.set(sp.x, gy - 0.18, sp.z);
       clone.rotation.y = sp.yaw;
       clone.scale.setScalar(sp.size);
       grp.add(clone);
@@ -3743,7 +3981,7 @@ function spawnStaticWorldModels() {
       const body = new CANNON.Body({
         mass: 0,
         material: matWorld,
-        position: new CANNON.Vec3(sp.x, hy - 0.05, sp.z),
+        position: new CANNON.Vec3(sp.x, gy + hy - 0.12, sp.z),
       });
       body.quaternion.setFromEuler(0, sp.yaw, 0);
       body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
@@ -3768,7 +4006,7 @@ function spawnStaticWorldModels() {
     grp.name = 'static_rooibos_bushes';
     BUSH_SPOTS.forEach(([bx, bz, bh], idx) => {
       const clone = tpl.template.clone(true);
-      clone.position.set(bx, -0.02, bz);
+      clone.position.set(bx, getTerrainHeight(bx, bz) - 0.08, bz);
       clone.rotation.y = (idx * 1.618) % (Math.PI * 2);
       const wScale = bh * (0.92 + (idx % 3) * 0.08);
       clone.scale.set(wScale, bh, wScale);
@@ -3793,8 +4031,9 @@ function spawnStaticWorldModels() {
     const grp = new THREE.Group();
     grp.name = 'static_covered_cars';
     for (const sp of COVERED_CAR_SPOTS) {
+      const gy = getTerrainHeight(sp.x, sp.z);
       const clone = tpl.template.clone(true);
-      clone.position.set(sp.x, 0, sp.z);
+      clone.position.set(sp.x, gy, sp.z);
       clone.rotation.y = sp.yaw;
       grp.add(clone);
 
@@ -3804,7 +4043,7 @@ function spawnStaticWorldModels() {
       const body = new CANNON.Body({
         mass: 0,
         material: matWorld,
-        position: new CANNON.Vec3(sp.x, hy, sp.z),
+        position: new CANNON.Vec3(sp.x, gy + hy, sp.z),
       });
       body.quaternion.setFromEuler(0, sp.yaw, 0);
       body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
@@ -3822,7 +4061,7 @@ function spawnStaticWorldModels() {
     ];
     for (const sp of spots) {
       const clone = tpl.template.clone(true);
-      clone.position.set(sp.x, 0, sp.z);
+      clone.position.set(sp.x, getTerrainHeight(sp.x, sp.z), sp.z);
       clone.rotation.y = sp.yaw;
       scene.add(clone);
     }
@@ -4006,7 +4245,7 @@ function clearAndSpawnProps() {
     }
 
     mesh.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-    body.position.set(x, y, z);
+    body.position.set(x, getTerrainHeight(x, z) + y, z);
     body.sleepSpeedLimit = 0.25;
     body.sleepTimeLimit = 1.0;
 
@@ -4044,7 +4283,7 @@ function clearAndSpawnProps() {
         material: matProp,
         linearDamping: 0.12,
         angularDamping: 0.16,
-        position: new CANNON.Vec3(x, hy + 0.04 + yExtra, z),
+        position: new CANNON.Vec3(x, getTerrainHeight(x, z) + hy + 0.05 + yExtra, z),
       });
       body.quaternion.setFromEuler(0, yaw, 0);
       body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
@@ -4548,7 +4787,7 @@ function clearAndSpawnVehicles() {
         material: matVehicle,
         linearDamping: 0.26,
         angularDamping: 0.34,
-        position: new CANNON.Vec3(spec.x, hy + 0.05, spec.z),
+        position: new CANNON.Vec3(spec.x, getTerrainHeight(spec.x, spec.z) + hy + 0.05, spec.z),
       });
       body.quaternion.setFromEuler(0, spec.yaw, 0);
       body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
@@ -4948,10 +5187,12 @@ function updateStickySnout() {
   const aim = getAimDirection();
   const fwd = new THREE.Vector3(aim.x, Math.max(-0.2, Math.min(0.45, aim.y)), aim.z).normalize();
   const holdDist = grabbedObj.kind === 'vehicle' ? 2.95 : (1.42 * 1.45);
+  const tx = playerBody.position.x + fwd.x * holdDist;
+  const tz = playerBody.position.z + fwd.z * holdDist;
   const target = new THREE.Vector3(
-    playerBody.position.x + fwd.x * holdDist,
-    Math.max(0.72, playerBody.position.y + (0.24 + fwd.y * 0.85) * 1.45),
-    playerBody.position.z + fwd.z * holdDist
+    tx,
+    Math.max(getTerrainHeight(tx, tz) + 0.72, playerBody.position.y + (0.24 + fwd.y * 0.85) * 1.45),
+    tz
   );
 
   const ob = grabbedObj.body;
@@ -5712,7 +5953,7 @@ function triggerJump() {
     playerBody.velocity.y = 11.8;
     playerLastGrounded = -10;
     sfx.jump();
-    spawnBurst(new THREE.Vector3(playerBody.position.x, Math.max(0.04, playerBody.position.y - PLAYER_SPHERE_R), playerBody.position.z), 0xeff7dc, 6, 3.2, 0.65);
+    spawnBurst(new THREE.Vector3(playerBody.position.x, Math.max(getTerrainHeight(playerBody.position.x, playerBody.position.z) + 0.04, playerBody.position.y - PLAYER_SPHERE_R), playerBody.position.z), 0xeff7dc, 6, 3.2, 0.65);
   }
 }
 
@@ -5750,6 +5991,8 @@ function toggleTractor() {
     playerYaw = Math.atan2(trFwd.x, trFwd.z);
     targetYaw = playerYaw;
     playerBody.position.copy(tractor.body.position).vadd(sideOffset, playerBody.position);
+    const exitGroundY = getTerrainHeight(playerBody.position.x, playerBody.position.z);
+    playerBody.position.y = Math.max(playerBody.position.y, exitGroundY + PLAYER_SPHERE_R + 0.25);
     playerBody.velocity.set(tractor.body.velocity.x * 0.35, 3.8, tractor.body.velocity.z * 0.35);
     playerPig.visible = !firstPerson;
     fpRig.visible = firstPerson;
@@ -5815,6 +6058,16 @@ function getMoveInputs() {
 function updatePlayer(dt, input) {
   const { mx, mz } = input;
   const moving = Math.hypot(mx, mz) > 0.08;
+  const p = playerBody.position;
+  const groundY = getTerrainHeight(p.x, p.z);
+  const minPlayerY = groundY + PLAYER_SPHERE_R;
+  if (p.y < minPlayerY - 0.02) {
+    p.y = minPlayerY;
+    if (playerBody.velocity.y < 0) playerBody.velocity.y = 0;
+    playerLastGrounded = elapsedTime;
+  } else if (p.y <= minPlayerY + 0.14 && Math.abs(playerBody.velocity.y) < 3.2) {
+    playerLastGrounded = elapsedTime;
+  }
   const grounded = (elapsedTime - playerLastGrounded) < 0.20;
 
   // Сжатие-растяжение (squash & stretch) и лёгкая пыль при приземлении на землю
@@ -5824,7 +6077,7 @@ function updatePlayer(dt, input) {
       playerPig.userData.triggerLand(landStrength);
     }
     if (landStrength > 0.55) {
-      spawnBurst(new THREE.Vector3(playerBody.position.x, Math.max(0.04, playerBody.position.y - PLAYER_SPHERE_R), playerBody.position.z), 0xeff7dc, 5, 3.0, 0.58);
+      spawnBurst(new THREE.Vector3(p.x, Math.max(groundY + 0.04, p.y - PLAYER_SPHERE_R), p.z), 0xeff7dc, 5, 3.0, 0.58);
     }
   }
   playerWasGrounded = grounded;
@@ -5838,7 +6091,6 @@ function updatePlayer(dt, input) {
     camera.fov += (62 - camera.fov) * Math.min(1, dt * 8);
     camera.updateProjectionMatrix();
   }
-  const p = playerBody.position;
   onSlideNow = slideZone && p.x > slideZone.xMin && p.x < slideZone.xMax &&
                Math.abs(p.z - slideZone.zCenter) < slideZone.halfW && p.y > 0.45 && p.y < 10.5;
   if (slideTrickCooldown > 0) slideTrickCooldown -= dt;
@@ -5850,7 +6102,7 @@ function updatePlayer(dt, input) {
     }
   }
 
-  if (!grounded && p.y > 2.2) {
+  if (!grounded && p.y > groundY + 2.2) {
     airTime += dt;
     const angSpd = playerBody.angularVelocity.length();
     airSpinAccum += (isRagdoll ? angSpd : (moving ? 2.5 : 0)) * dt;
@@ -5931,8 +6183,10 @@ function updatePlayer(dt, input) {
         const sideZ = -Math.sin(playerYaw) * (0.34 * PLAYER_SCALE) * hoofDustSide;
         const backX = -Math.sin(playerYaw) * (0.42 * PLAYER_SCALE);
         const backZ = -Math.cos(playerYaw) * (0.42 * PLAYER_SCALE);
+        const dustX = p.x + sideX + backX;
+        const dustZ = p.z + sideZ + backZ;
         spawnBurst(
-          new THREE.Vector3(p.x + sideX + backX, 0.04, p.z + sideZ + backZ),
+          new THREE.Vector3(dustX, getTerrainHeight(dustX, dustZ) + 0.04, dustZ),
           0xd8cfb8,
           2,
           1.8,
@@ -5944,7 +6198,7 @@ function updatePlayer(dt, input) {
     }
   }
 
-  playerPig.userData.updateShadow(0.03);
+  playerPig.userData.updateShadow(groundY + 0.03);
 
   p.x = Math.max(-HALF_WORLD + 2.5, Math.min(HALF_WORLD - 2.5, p.x));
   p.z = Math.max(-HALF_WORLD + 2.5, Math.min(HALF_WORLD - 2.5, p.z));
@@ -5958,8 +6212,13 @@ function updatePlayer(dt, input) {
 
 function updateTractor(dt, input) {
   const b = tractor.body;
-  // Надёжная проверка контакта колёс с землёй, чтобы трактор не терял тягу на поворотах
-  if (b.position.y <= 1.22 && Math.abs(b.velocity.y) < 3.5) {
+  const trGroundY = getTerrainHeight(b.position.x, b.position.z);
+  // Надёжная проверка контакта колёс с рельефом, чтобы трактор уверенно заезжал на холмы
+  if (b.position.y < trGroundY + 0.68) {
+    b.position.y = trGroundY + 0.68;
+    if (b.velocity.y < 0) b.velocity.y = 0;
+    tractor.lastGrounded = elapsedTime;
+  } else if (b.position.y <= trGroundY + 1.28 && Math.abs(b.velocity.y) < 3.5) {
     tractor.lastGrounded = elapsedTime;
   }
   const grounded = (elapsedTime - tractor.lastGrounded) < 0.32;
@@ -6111,10 +6370,13 @@ function updateCamera(dt) {
       camera.updateProjectionMatrix();
     }
     const dist = nitroActive ? 11.2 : 10.2;
+    const trCamX = tPos.x + Math.sin(camYaw) * Math.cos(camPitch) * dist;
+    const trCamZ = tPos.z + Math.cos(camYaw) * Math.cos(camPitch) * dist;
+    const trCamMinY = getTerrainHeight(trCamX, trCamZ) + 0.85;
     smoothCamPos.lerp(new THREE.Vector3(
-      tPos.x + Math.sin(camYaw) * Math.cos(camPitch) * dist,
-      Math.max(1.2, tPos.y + 2.4 + Math.sin(camPitch) * dist),
-      tPos.z + Math.cos(camYaw) * Math.cos(camPitch) * dist
+      trCamX,
+      Math.max(trCamMinY, tPos.y + 2.4 + Math.sin(camPitch) * dist),
+      trCamZ
     ), Math.min(1, dt * 10));
     smoothLookAt.lerp(new THREE.Vector3(tPos.x, tPos.y + 1.35, tPos.z), Math.min(1, dt * 12));
     camera.position.copy(smoothCamPos);
@@ -6131,10 +6393,13 @@ function updateCamera(dt) {
     camera.rotation.z = isRagdoll ? Math.sin(elapsedTime * 8) * 0.25 : 0;
   } else {
     const dist = isRagdoll ? CAM_DIST_RAGDOLL : CAM_DIST_NORMAL;
+    const pCamX = p.x + Math.sin(camYaw) * Math.cos(camPitch) * dist;
+    const pCamZ = p.z + Math.cos(camYaw) * Math.cos(camPitch) * dist;
+    const pCamMinY = getTerrainHeight(pCamX, pCamZ) + 0.55;
     smoothCamPos.lerp(new THREE.Vector3(
-      p.x + Math.sin(camYaw) * Math.cos(camPitch) * dist,
-      Math.max(0.45, p.y + CAM_HEIGHT_OFFSET + Math.sin(camPitch) * dist),
-      p.z + Math.cos(camYaw) * Math.cos(camPitch) * dist
+      pCamX,
+      Math.max(pCamMinY, p.y + CAM_HEIGHT_OFFSET + Math.sin(camPitch) * dist),
+      pCamZ
     ), Math.min(1, dt * 11));
     smoothLookAt.lerp(new THREE.Vector3(p.x, p.y + CAM_LOOK_Y_OFFSET, p.z), Math.min(1, dt * 14));
     camera.position.copy(smoothCamPos);
@@ -6182,7 +6447,7 @@ function animate() {
   const input = getMoveInputs();
 
   if (!inTractor) updatePlayer(dt, input);
-  else playerPig.userData.updateShadow(0.03);
+  else playerPig.userData.updateShadow(getTerrainHeight(playerBody.position.x, playerBody.position.z) + 0.03);
 
   updateTractor(dt, input);
   updateNpcs(dt);
@@ -6203,6 +6468,11 @@ function animate() {
       if (p.body.sleepState !== CANNON.Body.SLEEPING) p.body.sleep();
       continue;
     }
+    const pgY = getTerrainHeight(p.body.position.x, p.body.position.z) + 0.20;
+    if (p.body.position.y < pgY) {
+      p.body.position.y = pgY;
+      if (p.body.velocity.y < 0) p.body.velocity.y *= -0.25;
+    }
     p.mesh.position.copy(p.body.position);
     p.mesh.quaternion.copy(p.body.quaternion);
   }
@@ -6215,6 +6485,11 @@ function animate() {
     if (dist > 85 && v !== grabbedObj) {
       if (v.body.sleepState !== CANNON.Body.SLEEPING) v.body.sleep();
       continue;
+    }
+    const vgY = getTerrainHeight(v.body.position.x, v.body.position.z) + (v.halfY || 0.65);
+    if (v.body.position.y < vgY - 0.15) {
+      v.body.position.y = vgY;
+      if (v.body.velocity.y < 0) v.body.velocity.y = 0;
     }
     v.mesh.position.copy(v.body.position);
     v.mesh.quaternion.copy(v.body.quaternion);
@@ -6234,7 +6509,7 @@ function animate() {
     pt.life -= dt;
     pt.vy -= 18 * dt;
     pt.mesh.position.x += pt.vx * dt;
-    pt.mesh.position.y = Math.max(0.12, pt.mesh.position.y + pt.vy * dt);
+    pt.mesh.position.y = Math.max(getTerrainHeight(pt.mesh.position.x, pt.mesh.position.z) + 0.12, pt.mesh.position.y + pt.vy * dt);
     pt.mesh.position.z += pt.vz * dt;
     pt.mesh.rotation.x += dt * 5;
     pt.mesh.rotation.y += dt * 4;
