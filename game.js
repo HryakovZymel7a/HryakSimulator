@@ -954,21 +954,35 @@ let worldPBRCache = null;
 function getWorldPBRMaterials() {
   if (worldPBRCache) return worldPBRCache;
   worldPBRCache = {
-    bricks: loadPBRMaterial('Bricks085_1K-JPG', 2, 2, {
+    // Красный кирпич (Bricks085)
+    bricks: loadPBRMaterial('Bricks085_1K-JPG', 2.2, 2.2, {
+      fallbackMap: texPlaza,
+      fallbackRoughness: 0.88,
+      roughness: 0.88,
+      color: 0xd98677,
+      useNormal: true,
+      useRoughness: true,
+      normalScale: 0.78,
+    }),
+    // Светлая штукатурка
+    plasterLight: loadPBRMaterial('Concrete042C_1K-JPG', 1.8, 1.8, {
       fallbackMap: texPlaza,
       fallbackRoughness: 0.88,
       roughness: 0.90,
+      color: 0xf7efe0,
       useNormal: true,
       useRoughness: true,
-      normalScale: 0.72,
+      normalScale: 0.34,
     }),
+    // Архитектурный бетон (Concrete042C)
     concrete: loadPBRMaterial('Concrete042C_1K-JPG', 1.6, 1.6, {
       fallbackMap: texConcrete,
       fallbackRoughness: 0.90,
       roughness: 0.92,
+      color: 0xcbd0d6,
       useNormal: true,
       useRoughness: true,
-      normalScale: 0.62,
+      normalScale: 0.65,
     }),
     concreteTower: loadPBRMaterial('Concrete042C_1K-JPG', 2, 3, {
       fallbackMap: texConcrete,
@@ -978,6 +992,7 @@ function getWorldPBRMaterials() {
       useRoughness: true,
       normalScale: 0.65,
     }),
+    // Черепица для крыш (RoofingTiles001)
     roofTiles: loadPBRMaterial('RoofingTiles001_1K-JPG', 2.4, 2.4, {
       fallbackMap: texPlaza,
       fallbackRoughness: 0.82,
@@ -986,6 +1001,7 @@ function getWorldPBRMaterials() {
       useRoughness: true,
       normalScale: 0.78,
     }),
+    // Деревянные доски (Planks039) для мельницы и деревянных вставок на домах
     planksWindmill: loadPBRMaterial('Planks039_1K-JPG', 2, 2, {
       fallbackMap: texCrate,
       fallbackRoughness: 0.85,
@@ -1010,10 +1026,13 @@ function getWorldPBRMaterials() {
       useRoughness: true,
       normalScale: 0.62,
     }),
+    // Глянцевое тёмно-голубое стекло с отражением (roughness: 0.1, metalness: 0.8)
     glassWindow: new THREE.MeshStandardMaterial({
-      color: 0x5c9ac2,
-      roughness: 0.14,
-      metalness: 0.35,
+      color: 0x164166,
+      emissive: new THREE.Color(0x071a2b),
+      emissiveIntensity: 0.25,
+      roughness: 0.1,
+      metalness: 0.8,
     }),
     metalContainer(tintHex = 0xffffff) {
       return loadPBRMaterial('Metal041B_1K-JPG', 2, 2, {
@@ -1032,9 +1051,7 @@ function getWorldPBRMaterials() {
   return worldPBRCache;
 }
 
-// Генерирует аккуратные мировые Box-Projection UV в метрах для моделей Kenney,
-// чтобы тайловые PBR-текстуры (Bricks085, RoofingTiles001, Planks039, Metal041B, Concrete042C)
-// ложились без растяжек и с предсказуемым масштабом repeat.set!
+// Генерирует аккуратные мировые Box-Projection UV в метрах для моделей Kenney
 function applyWorldBoxUVs(mesh, rootInverseMatrix, uvUnitMeters = 4.0) {
   if (!mesh || !mesh.geometry || !mesh.geometry.attributes || !mesh.geometry.attributes.position) return;
   const geo = mesh.geometry.clone();
@@ -1075,9 +1092,49 @@ function applyWorldBoxUVs(mesh, rootInverseMatrix, uvUnitMeters = 4.0) {
   geo.attributes.uv.needsUpdate = true;
 }
 
-// Если здание building-*.glb пришло одним слитым мешем с 1 материалом,
-// разделяем треугольники на 2 группы (стены и крыша) по высоте и нормали!
-function splitSingleMeshIntoWallAndRoof(mesh, rootInverseMatrix, buildingHeight, wallMat, roofMat) {
+// Проверяет, является ли материал/меш стеклом или рамой/дверью по имени или исходному цвету
+function classifyHouseMaterialByMeta(oldMat, meshName) {
+  const mName = `${meshName || ''} ${(oldMat && oldMat.name) || ''}`.toLowerCase();
+  if (/glass|window|pane/.test(mName)) return 'glass';
+  if (/door|frame|trim|shutter|sill|porch|handle/.test(mName)) return 'native';
+
+  if (oldMat && oldMat.color) {
+    const c = oldMat.color;
+    const lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+    // Синий/голубой исходный цвет -> стекло
+    if (c.b > c.r * 1.18 && c.b > 0.28) return 'glass';
+    // Тёмный (рамы, двери, козырьки) -> сохраняем родной материал
+    if (lum < 0.28) return 'native';
+  }
+  return null;
+}
+
+// Считывает пиксели родной текстуры (colormap.png) здания в Canvas для точного распознавания окон и дверей в слитых мешах
+function sampleNativeTexturePixels(tex) {
+  if (!tex || !tex.image) return null;
+  try {
+    const img = tex.image;
+    const w = img.width || img.naturalWidth;
+    const h = img.height || img.naturalHeight;
+    if (!w || !h) return null;
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, w, h);
+    return { data: ctx.getImageData(0, 0, w, h).data, w, h, flipY: tex.flipY !== false };
+  } catch (_) {
+    return null;
+  }
+}
+
+// Разделяет слитый меш здания (building-*.glb) на 5 групп материалов:
+// 0: основные стены (Bricks085 / светлая штукатурка / Concrete042C),
+// 1: крыша (RoofingTiles001 — строго по наклону нормалей normal.y > 0.5),
+// 2: глянцевое тёмно-голубое стекло (roughness: 0.1, metalness: 0.8),
+// 3: родной материал рам и дверей (с сохранением оригинальных UV!),
+// 4: деревянные вставки (Planks039)
+function splitMergedHouseMesh(mesh, rootInverseMatrix, buildingHeight, wallMat, roofMat, glassMat, nativeMat, woodMat, hasWoodInserts) {
   let geo = mesh.geometry;
   if (geo.index) {
     geo = geo.toNonIndexed();
@@ -1088,72 +1145,158 @@ function splitSingleMeshIntoWallAndRoof(mesh, rootInverseMatrix, buildingHeight,
   const posAttr = geo.attributes.position;
   const normAttr = geo.attributes.normal;
   const uvAttr = geo.attributes.uv;
+  const colorAttr = geo.attributes.color;
   const relMat = new THREE.Matrix4().multiplyMatrices(rootInverseMatrix, mesh.matrixWorld);
   const normMat = new THREE.Matrix3().getNormalMatrix(relMat);
 
+  if (nativeMat && nativeMat.map) setSRGBTex(nativeMat.map);
+  const texSampler = (nativeMat && nativeMat.map && uvAttr) ? sampleNativeTexturePixels(nativeMat.map) : null;
+
   const vCount = posAttr.count;
   const triCount = Math.floor(vCount / 3);
-  const wallTris = [];
-  const roofTris = [];
+  const buckets = [[], [], [], [], []]; // 0:wall, 1:roof, 2:glass, 3:native(doors/frames), 4:woodInsert
 
   const p0 = new THREE.Vector3(), p1 = new THREE.Vector3(), p2 = new THREE.Vector3();
   const n0 = new THREE.Vector3(), n1 = new THREE.Vector3(), n2 = new THREE.Vector3();
-  const roofYThresh = buildingHeight * 0.60;
+  const invScale = 1.0 / 4.0;
 
   for (let t = 0; t < triCount; t++) {
     const i0 = t * 3, i1 = i0 + 1, i2 = i0 + 2;
     p0.fromBufferAttribute(posAttr, i0).applyMatrix4(relMat);
     p1.fromBufferAttribute(posAttr, i1).applyMatrix4(relMat);
     p2.fromBufferAttribute(posAttr, i2).applyMatrix4(relMat);
-    n0.fromBufferAttribute(normAttr, i0).applyMatrix3(normMat);
-    n1.fromBufferAttribute(normAttr, i1).applyMatrix3(normMat);
-    n2.fromBufferAttribute(normAttr, i2).applyMatrix3(normMat);
+    n0.fromBufferAttribute(normAttr, i0).applyMatrix3(normMat).normalize();
+    n1.fromBufferAttribute(normAttr, i1).applyMatrix3(normMat).normalize();
+    n2.fromBufferAttribute(normAttr, i2).applyMatrix3(normMat).normalize();
 
     const avgY = (p0.y + p1.y + p2.y) / 3;
     const avgNy = (n0.y + n1.y + n2.y) / 3;
-    const isRoof = (avgY > roofYThresh && avgNy > 0.28) || (avgY > buildingHeight * 0.78 && avgNy > 0.08);
-    if (isRoof) roofTris.push(t);
-    else wallTris.push(t);
-  }
 
-  if (roofTris.length === 0 || wallTris.length === 0) {
-    mesh.material = wallMat;
-    return;
-  }
+    // 1. Крыши отделяем строго по наклону нормалей (normal.y > 0.5) и выше цоколя
+    if (avgNy > 0.5 && avgY > 0.45) {
+      buckets[1].push(t);
+      continue;
+    }
 
-  const ordered = wallTris.concat(roofTris);
-  const newPos = new Float32Array(vCount * 3);
-  const newNorm = new Float32Array(vCount * 3);
-  const newUv = uvAttr ? new Float32Array(vCount * 2) : null;
+    // 2. Определяем родной цвет треугольника (из colormap текстуры или vertexColors) для сохранения окон и дверей
+    let r = -1, g = -1, b = -1;
+    if (texSampler) {
+      const cu = (((uvAttr.getX(i0) + uvAttr.getX(i1) + uvAttr.getX(i2)) / 3) % 1 + 1) % 1;
+      let cv = (((uvAttr.getY(i0) + uvAttr.getY(i1) + uvAttr.getY(i2)) / 3) % 1 + 1) % 1;
+      if (texSampler.flipY) cv = 1 - cv;
+      const px = Math.min(texSampler.w - 1, Math.floor(cu * texSampler.w));
+      const py = Math.min(texSampler.h - 1, Math.floor(cv * texSampler.h));
+      const idx4 = (py * texSampler.w + px) * 4;
+      r = texSampler.data[idx4] / 255;
+      g = texSampler.data[idx4 + 1] / 255;
+      b = texSampler.data[idx4 + 2] / 255;
+    } else if (colorAttr) {
+      r = (colorAttr.getX(i0) + colorAttr.getX(i1) + colorAttr.getX(i2)) / 3;
+      g = (colorAttr.getY(i0) + colorAttr.getY(i1) + colorAttr.getY(i2)) / 3;
+      b = (colorAttr.getZ(i0) + colorAttr.getZ(i1) + colorAttr.getZ(i2)) / 3;
+    }
 
-  for (let k = 0; k < ordered.length; k++) {
-    const srcT = ordered[k];
-    for (let c = 0; c < 3; c++) {
-      const sIdx = srcT * 3 + c;
-      const dIdx = k * 3 + c;
-      newPos[dIdx * 3]     = posAttr.getX(sIdx);
-      newPos[dIdx * 3 + 1] = posAttr.getY(sIdx);
-      newPos[dIdx * 3 + 2] = posAttr.getZ(sIdx);
-      newNorm[dIdx * 3]     = normAttr.getX(sIdx);
-      newNorm[dIdx * 3 + 1] = normAttr.getY(sIdx);
-      newNorm[dIdx * 3 + 2] = normAttr.getZ(sIdx);
-      if (newUv) {
-        newUv[dIdx * 2]     = uvAttr.getX(sIdx);
-        newUv[dIdx * 2 + 1] = uvAttr.getY(sIdx);
+    if (r >= 0) {
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const sat = (maxC - minC) / Math.max(0.01, maxC);
+
+      // Стёкла окон (голубой/синий оттенок или тёмно-синее стекло на стене)
+      const isBlueGlass = (b > r * 1.15 && b > 0.26 && avgY > 0.55 && Math.abs(avgNy) < 0.45);
+      if (isBlueGlass) {
+        buckets[2].push(t);
+        continue;
+      }
+
+      // Оконные рамы, двери, козырьки и тёмные/белые наличники -> оставляем родной материал и родные UV!
+      const isDarkDoorOrFrame = (lum < 0.30 && Math.abs(avgNy) < 0.45);
+      const isWhiteWindowTrim = (lum > 0.84 && sat < 0.14 && avgY > 0.45 && Math.abs(avgNy) < 0.45);
+      if (isDarkDoorOrFrame || isWhiteWindowTrim) {
+        buckets[3].push(t);
+        continue;
       }
     }
+
+    // 3. Деревянные вставки (Planks039) на верхнем ярусе / фронтонах у комбинированных домов
+    if (hasWoodInserts && avgY > buildingHeight * 0.46 && Math.abs(avgNy) <= 0.5) {
+      buckets[4].push(t);
+      continue;
+    }
+
+    // 4. Основные стены дома (кирпич / светлая штукатурка / бетон)
+    buckets[0].push(t);
+  }
+
+  const newPos = new Float32Array(vCount * 3);
+  const newNorm = new Float32Array(vCount * 3);
+  const newUv = new Float32Array(vCount * 2);
+
+  let cursor = 0;
+  geo.clearGroups();
+  const pTmp = new THREE.Vector3();
+  const nTmp = new THREE.Vector3();
+
+  for (let matIdx = 0; matIdx < buckets.length; matIdx++) {
+    const list = buckets[matIdx];
+    if (list.length === 0) continue;
+    const useNativeUV = (matIdx === 2 || matIdx === 3) && uvAttr;
+
+    for (let k = 0; k < list.length; k++) {
+      const srcT = list[k];
+      for (let c = 0; c < 3; c++) {
+        const sIdx = srcT * 3 + c;
+        const dIdx = cursor + k * 3 + c;
+        const vx = posAttr.getX(sIdx);
+        const vy = posAttr.getY(sIdx);
+        const vz = posAttr.getZ(sIdx);
+        const nx = normAttr.getX(sIdx);
+        const ny = normAttr.getY(sIdx);
+        const nz = normAttr.getZ(sIdx);
+
+        newPos[dIdx * 3]     = vx;
+        newPos[dIdx * 3 + 1] = vy;
+        newPos[dIdx * 3 + 2] = vz;
+        newNorm[dIdx * 3]     = nx;
+        newNorm[dIdx * 3 + 1] = ny;
+        newNorm[dIdx * 3 + 2] = nz;
+
+        if (useNativeUV) {
+          newUv[dIdx * 2]     = uvAttr.getX(sIdx);
+          newUv[dIdx * 2 + 1] = uvAttr.getY(sIdx);
+        } else {
+          pTmp.set(vx, vy, vz).applyMatrix4(relMat);
+          nTmp.set(nx, ny, nz).applyMatrix3(normMat).normalize();
+          const ax = Math.abs(nTmp.x), ay = Math.abs(nTmp.y), az = Math.abs(nTmp.z);
+          if (ay >= ax && ay >= az) {
+            newUv[dIdx * 2]     = pTmp.x * invScale;
+            newUv[dIdx * 2 + 1] = pTmp.z * invScale;
+          } else if (ax >= az) {
+            newUv[dIdx * 2]     = pTmp.z * invScale;
+            newUv[dIdx * 2 + 1] = pTmp.y * invScale;
+          } else {
+            newUv[dIdx * 2]     = pTmp.x * invScale;
+            newUv[dIdx * 2 + 1] = pTmp.y * invScale;
+          }
+        }
+      }
+    }
+
+    geo.addGroup(cursor, list.length * 3, matIdx);
+    cursor += list.length * 3;
   }
 
   geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(newNorm, 3));
-  if (newUv) geo.setAttribute('uv', new THREE.BufferAttribute(newUv, 2));
-  geo.clearGroups();
-  geo.addGroup(0, wallTris.length * 3, 0);
-  geo.addGroup(wallTris.length * 3, roofTris.length * 3, 1);
-  mesh.material = [wallMat, roofMat];
+  geo.setAttribute('uv', new THREE.BufferAttribute(newUv, 2));
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.normal.needsUpdate = true;
+  geo.attributes.uv.needsUpdate = true;
+
+  mesh.material = [wallMat, roofMat, glassMat, nativeMat || wallMat, woodMat];
 }
 
-// Заменяет мультяшные материалы на реалистичные PBR-текстуры для домов и построек Kenney
+// Заменяет мультяшные материалы на реалистичные PBR-текстуры, сохраняя окна, рамы и двери
 function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) {
   const pbr = getWorldPBRMaterials();
   innerRoot.updateMatrixWorld(true);
@@ -1196,40 +1339,65 @@ function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) 
     return;
   }
 
-  // Дома (building-*.glb): стены из Bricks085 или Concrete042C, крыши из RoofingTiles001
-  const wallMat = (style === 'concrete-house') ? pbr.concrete : pbr.bricks;
+  // Разнообразие домов: красный кирпич (Bricks085), светлая штукатурка, бетон (Concrete042C) и деревянные вставки (Planks039)
+  let wallMat = pbr.bricks;
+  let hasWoodInserts = false;
+  if (style === 'plaster-house') {
+    wallMat = pbr.plasterLight;
+  } else if (style === 'concrete-house') {
+    wallMat = pbr.concrete;
+  } else if (style === 'wood-accent-house') {
+    wallMat = pbr.plasterLight;
+    hasWoodInserts = true;
+  } else if (style === 'brick-wood-house') {
+    wallMat = pbr.bricks;
+    hasWoodInserts = true;
+  }
   const roofMat = pbr.roofTiles;
 
-  // Проверяем, есть ли у здания разделённые материалы/меши или оно полностью слито в один материал
+  // Если здание пришло единым слитым мешем с 1 материалом — разделяем стены, крышу (normal.y > 0.5), окна, двери и вставки!
   const singleMergedMesh = meshes.length === 1 && !Array.isArray(meshes[0].material);
   if (singleMergedMesh) {
-    applyWorldBoxUVs(meshes[0], invRoot, 4.0);
-    splitSingleMeshIntoWallAndRoof(meshes[0], invRoot, Math.max(2.0, finalSize.y), wallMat, roofMat);
+    const nativeMat = meshes[0].material;
+    splitMergedHouseMesh(
+      meshes[0],
+      invRoot,
+      Math.max(2.0, finalSize.y),
+      wallMat,
+      roofMat,
+      pbr.glassWindow,
+      nativeMat,
+      pbr.planksWindmill,
+      hasWoodInserts
+    );
     return;
   }
 
+  // Многомешевые / многоматериальные здания: сохраняем родные материалы окон, рам и дверей!
   const pickHouseMaterial = (oldMat, meshName, meshBox, avgNy) => {
-    const mName = `${meshName || ''} ${(oldMat && oldMat.name) || ''}`.toLowerCase();
-    if (/window|glass|pane|light|glow/.test(mName)) return pbr.glassWindow;
-    if (/roof|tile|shingle|chimney/.test(mName)) return roofMat;
-    if (/door|wood|plank|porch|shutter|fence/.test(mName)) return pbr.planksWindmill;
-    if (/concrete|stone|base|foundation|step|trim|gutter/.test(mName)) return pbr.concrete;
-
-    // Если имена материалов стандартные (например, colormap / Material.001), определяем по цвету и геометрии
-    if (oldMat && oldMat.color) {
-      const c = oldMat.color;
-      if (c.b > c.r * 1.25 && c.b > 0.42 && c.g > 0.35) return pbr.glassWindow;
+    const metaClass = classifyHouseMaterialByMeta(oldMat, meshName);
+    if (metaClass === 'glass') return pbr.glassWindow;
+    if (metaClass === 'native') {
+      if (oldMat && oldMat.map) setSRGBTex(oldMat.map);
+      return oldMat;
     }
-    if (meshBox && meshBox.min.y > finalSize.y * 0.55 && avgNy > 0.32) {
+
+    const mName = `${meshName || ''} ${(oldMat && oldMat.name) || ''}`.toLowerCase();
+    if (/roof|tile|shingle|chimney/.test(mName)) return roofMat;
+    if (/wood|plank|gable/.test(mName)) return pbr.planksWindmill;
+    if (/concrete|stone|base|foundation|step|gutter/.test(mName)) return pbr.concrete;
+
+    // Крышу отделяем строго по наклону нормалей (normal.y > 0.5)
+    if (avgNy > 0.5 && (!meshBox || meshBox.min.y > 0.45)) {
       return roofMat;
+    }
+    if (hasWoodInserts && meshBox && meshBox.min.y > finalSize.y * 0.45) {
+      return pbr.planksWindmill;
     }
     return wallMat;
   };
 
   for (const m of meshes) {
-    applyWorldBoxUVs(m, invRoot, 4.0);
-
-    // Считаем локальный boundingBox и среднюю вертикальную нормаль меша для определения крыши
     const relMat = new THREE.Matrix4().multiplyMatrices(invRoot, m.matrixWorld);
     const normMat = new THREE.Matrix3().getNormalMatrix(relMat);
     const posAttr = m.geometry.attributes.position;
@@ -1251,6 +1419,19 @@ function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) 
     }
     const avgNy = samples > 0 ? nySum / samples : 0;
 
+    // Проверяем, является ли весь меш окном/дверью/рамой — тогда не трогаем его родные UV!
+    const singleMat = !Array.isArray(m.material) ? m.material : null;
+    const singleMeta = singleMat ? classifyHouseMaterialByMeta(singleMat, m.name) : null;
+    if (singleMeta === 'glass') {
+      m.material = pbr.glassWindow;
+      continue;
+    }
+    if (singleMeta === 'native') {
+      if (singleMat && singleMat.map) setSRGBTex(singleMat.map);
+      continue;
+    }
+
+    applyWorldBoxUVs(m, invRoot, 4.0);
     if (Array.isArray(m.material)) {
       m.material = m.material.map((oldMat) => pickHouseMaterial(oldMat, m.name, mBox, avgNy));
     } else {
@@ -1614,7 +1795,9 @@ function buildWorld() {
     g.rotation.y = yaw;
 
     const pbrMats = getWorldPBRMaterials();
-    const wallMat = (wallTex === 'concrete') ? pbrMats.concrete : pbrMats.bricks;
+    const wallMat = (wallTex === 'concrete') ? pbrMats.concrete
+      : (wallTex === 'plaster') ? pbrMats.plasterLight
+      : pbrMats.bricks;
     const roofMat = pbrMats.roofTiles;
     const trimMat = pbrMats.concrete;
     const doorMat = pbrMats.planksWindmill;
@@ -1657,10 +1840,20 @@ function buildWorld() {
     return { mesh: g, body };
   }
 
+  const HOUSE_STYLE_CYCLE = [
+    'brick-house',
+    'plaster-house',
+    'concrete-house',
+    'wood-accent-house',
+    'brick-wood-house',
+  ];
   let glbHouseIndex = 0;
   function createGlbHouse(filename, x, z, yaw, targetSize, wallTex, roofTex, fw = 9.5, fh = 5.2, fdep = 8.2, acornIdx = -1, wallKind = null) {
     noTreeZones.push({ x, z, r: targetSize * 0.88 });
-    const kind = wallKind || ((glbHouseIndex++ % 3 === 1) ? 'concrete' : 'brick');
+    const chosenStyle = wallKind || HOUSE_STYLE_CYCLE[glbHouseIndex++ % HOUSE_STYLE_CYCLE.length];
+    const fallbackKind = chosenStyle.includes('concrete') ? 'concrete'
+      : (chosenStyle.includes('plaster') || chosenStyle === 'wood-accent-house') ? 'plaster'
+      : 'brick';
     placeKenneyModel({
       filename,
       x,
@@ -1668,8 +1861,8 @@ function buildWorld() {
       yaw,
       targetSize,
       scaleMode: 'maxHoriz',
-      pbrStyle: kind === 'concrete' ? 'concrete-house' : 'brick-house',
-      fallbackBuilder: () => createCottage(x, z, yaw, kind, roofTex, fw, fh, fdep),
+      pbrStyle: chosenStyle,
+      fallbackBuilder: () => createCottage(x, z, yaw, fallbackKind, roofTex, fw, fh, fdep),
       onLoaded: (holder, finalSize) => {
         if (acornIdx >= 0 && roofHeightHooks.has(acornIdx)) {
           roofHeightHooks.get(acornIdx)(finalSize.y + 1.15);
@@ -3116,21 +3309,49 @@ const vehicleVariantsCache = new Map(); // filename -> Promise<Array<{ template,
 
 function normalizeVehicleSubtree(node, targetLength) {
   const wrapper = new THREE.Group();
+  const orientGroup = new THREE.Group();
   const inner = node.clone(true);
-  wrapper.add(inner);
 
-  // Сбрасываем локальную позицию/поворот корня варианта, если он был смещён в сборном файле
+  // Сохраняем мировую ориентацию родительских узлов glTF (например, поворот Sketchfab_model), сбрасывая только позицию
+  node.updateMatrixWorld(true);
+  const worldQuat = new THREE.Quaternion();
+  node.getWorldQuaternion(worldQuat);
+  inner.quaternion.copy(worldQuat);
   inner.position.set(0, 0, 0);
-  inner.updateMatrixWorld(true);
 
-  const rawBox = new THREE.Box3().setFromObject(inner);
+  orientGroup.add(inner);
+  wrapper.add(orientGroup);
+  wrapper.updateMatrixWorld(true);
+
+  const rawBox = new THREE.Box3().setFromObject(orientGroup);
   if (rawBox.isEmpty()) return null;
   const rawSize = new THREE.Vector3();
   rawBox.getSize(rawSize);
 
-  // Выравниваем длину машины строго вдоль оси Z (чтобы yaw = 0 парковал вдоль дороги Север-Юг)
-  if (rawSize.x > rawSize.z * 1.12) {
-    inner.rotation.y += Math.PI / 2;
+  // 1. Если машина стоит вертикально на бампере (самая длинная сторона по Y), укладываем её горизонтально
+  if (rawSize.y > Math.max(rawSize.x, rawSize.z) * 1.02) {
+    orientGroup.rotation.x = -Math.PI / 2;
+    orientGroup.updateMatrixWorld(true);
+    const afterXBox = new THREE.Box3().setFromObject(orientGroup);
+    const afterXSize = new THREE.Vector3();
+    afterXBox.getSize(afterXSize);
+    // Если после наклона машина легла на бок (высота по X больше ширины по Y), доворачиваем по Z
+    if (afterXSize.y > afterXSize.x * 1.18) {
+      orientGroup.rotation.z = Math.PI / 2;
+      orientGroup.updateMatrixWorld(true);
+    }
+  }
+
+  // 2. Выравниваем самую длинную горизонтальную сторону строго вдоль оси Z (вдоль дороги)
+  const horizBox = new THREE.Box3().setFromObject(orientGroup);
+  const horizSize = new THREE.Vector3();
+  horizBox.getSize(horizSize);
+  if (horizSize.x > horizSize.z * 1.12) {
+    const yawAlign = new THREE.Group();
+    wrapper.remove(orientGroup);
+    yawAlign.add(orientGroup);
+    yawAlign.rotation.y = Math.PI / 2;
+    wrapper.add(yawAlign);
   }
 
   wrapper.updateMatrixWorld(true);
@@ -3138,9 +3359,41 @@ function normalizeVehicleSubtree(node, targetLength) {
   const rotSize = new THREE.Vector3();
   rotBox.getSize(rotSize);
 
-  const maxHoriz = Math.max(0.01, rotSize.x, rotSize.z);
+  // 3. Проверяем, что колёса снизу, а сужающаяся кабина/крыша сверху (иначе переворачиваем на 180° вокруг Z)
+  const midY = (rotBox.min.y + rotBox.max.y) * 0.5;
+  const spanY = Math.max(0.01, rotSize.y);
+  let bottomW = 0, bottomN = 0, topW = 0, topN = 0;
+  const vTmp = new THREE.Vector3();
+  wrapper.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry || !obj.geometry.attributes.position) return;
+    const pos = obj.geometry.attributes.position;
+    const step = Math.max(1, Math.floor(pos.count / 120));
+    for (let i = 0; i < pos.count; i += step) {
+      vTmp.fromBufferAttribute(pos, i).applyMatrix4(obj.matrixWorld);
+      const normY = (vTmp.y - rotBox.min.y) / spanY;
+      if (normY < 0.35) { bottomW += Math.abs(vTmp.x); bottomN++; }
+      else if (normY > 0.65) { topW += Math.abs(vTmp.x); topN++; }
+    }
+  });
+  if (bottomN > 0 && topN > 0 && (topW / topN) > (bottomW / bottomN) * 1.18) {
+    const flipGroup = new THREE.Group();
+    while (wrapper.children.length > 0) flipGroup.add(wrapper.children[0]);
+    flipGroup.rotation.z = Math.PI;
+    wrapper.add(flipGroup);
+    wrapper.updateMatrixWorld(true);
+  }
+
+  // 4. Масштабируем по самой длинной горизонтальной стороне и центрируем по (0, 0, 0) для CANNON.Box
+  const alignedBox = new THREE.Box3().setFromObject(wrapper);
+  const alignedSize = new THREE.Vector3();
+  alignedBox.getSize(alignedSize);
+
+  const maxHoriz = Math.max(0.01, alignedSize.x, alignedSize.z);
   const s = targetLength / maxHoriz;
-  inner.scale.multiplyScalar(s);
+  const rootTransform = new THREE.Group();
+  while (wrapper.children.length > 0) rootTransform.add(wrapper.children[0]);
+  rootTransform.scale.setScalar(s);
+  wrapper.add(rootTransform);
 
   wrapper.updateMatrixWorld(true);
   const scaledBox = new THREE.Box3().setFromObject(wrapper);
@@ -3149,10 +3402,9 @@ function normalizeVehicleSubtree(node, targetLength) {
   scaledBox.getCenter(center);
   scaledBox.getSize(finalSize);
 
-  // Центрируем геометрию по (0, 0, 0) для точного совпадения с физическим телом CANNON.Box
-  inner.position.x -= center.x;
-  inner.position.y -= center.y;
-  inner.position.z -= center.z;
+  rootTransform.position.x -= center.x;
+  rootTransform.position.y -= center.y;
+  rootTransform.position.z -= center.z;
 
   wrapper.traverse((obj) => {
     if (obj.isMesh) {
