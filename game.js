@@ -407,7 +407,7 @@ else renderer.outputEncoding = THREE.sRGBEncoding;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0xcfeaff, 0.0028);
 
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.15, 360);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.22, 360);
 
 // Градиентное небо + солнце
 const sunDir = new THREE.Vector3(0.52, 0.68, 0.42).normalize();
@@ -773,6 +773,8 @@ const roofHeightHooks = new Map(); // acornIdx -> (roofY) => void
  * постановкой на y = yBase, тенями и точным CANNON.Box-коллайдером под реальные габариты.
  * Пока .glb грузится (или если он недоступен), отображается мягкий процедурный fallback.
  */
+const placedKenneyCoords = [];
+
 function placeKenneyModel({
   filename,
   x,
@@ -786,6 +788,15 @@ function placeKenneyModel({
   fallbackBuilder,
   onLoaded = null,
 }) {
+  // Защита от двойного спавна постройки в одних и тех же координатах (исключает наложение стен и Z-fighting)
+  for (const prev of placedKenneyCoords) {
+    if (Math.hypot(prev.x - x, prev.z - z) < 1.5 && Math.abs(prev.yBase - yBase) < 1.0) {
+      console.warn(`Пропущен дубликат постройки ${filename} в (${x}, ${z})`);
+      return;
+    }
+  }
+  placedKenneyCoords.push({ filename, x, z, yBase });
+
   const fallback = fallbackBuilder ? fallbackBuilder() : null;
 
   loadModel(filename).then((model) => {
@@ -913,6 +924,9 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     roughness = 0.92,
     metalness = 0.0,
     envMapIntensity = 1.0,
+    polygonOffset = false,
+    polygonOffsetFactor = 0,
+    polygonOffsetUnits = 0,
     useNormal = false,
     useRoughness = false,
     useMetalness = false,
@@ -921,7 +935,7 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     side = THREE.FrontSide,
   } = options;
 
-  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${metalness}|${envMapIntensity}|${useNormal}|${useRoughness}|${useMetalness}|${normalScale}|${color}|${side}`;
+  const key = `${prefix}|${repeatX}x${repeatY}|${roughness}|${metalness}|${envMapIntensity}|${polygonOffset}:${polygonOffsetFactor}:${polygonOffsetUnits}|${useNormal}|${useRoughness}|${useMetalness}|${normalScale}|${color}|${side}`;
   if (pbrMaterialCache.has(key)) return pbrMaterialCache.get(key);
 
   const mat = new THREE.MeshStandardMaterial({
@@ -930,6 +944,9 @@ function loadPBRMaterial(prefix, repeatX, repeatY, options = {}) {
     roughness: fallbackRoughness,
     metalness: useMetalness ? Math.max(0.5, metalness) : metalness,
     envMapIntensity,
+    polygonOffset,
+    polygonOffsetFactor,
+    polygonOffsetUnits,
     side,
   });
   pbrMaterialCache.set(key, mat);
@@ -984,13 +1001,16 @@ let worldPBRCache = null;
 function getWorldPBRMaterials() {
   if (worldPBRCache) return worldPBRCache;
   worldPBRCache = {
-    // Кирпичные стены домов (Bricks085): светлые и чёткие, не уходят в чёрный в тени
+    // Кирпичные стены домов (Bricks085): светлые, чёткие, с polygonOffset против Z-fighting
     bricks: loadPBRMaterial('Bricks085_1K-JPG', 2.2, 2.2, {
       fallbackMap: texPlaza,
       fallbackRoughness: 0.75,
       roughness: 0.75,
       metalness: 0.05,
       envMapIntensity: 1.5,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
       color: 0xffffff,
       useNormal: true,
       useRoughness: true,
@@ -1003,6 +1023,9 @@ function getWorldPBRMaterials() {
       roughness: 0.75,
       metalness: 0.05,
       envMapIntensity: 1.5,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
       color: 0xffffff,
       useNormal: true,
       useRoughness: true,
@@ -1015,6 +1038,9 @@ function getWorldPBRMaterials() {
       roughness: 0.75,
       metalness: 0.05,
       envMapIntensity: 1.5,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
       color: 0xffffff,
       useNormal: true,
       useRoughness: true,
@@ -1027,6 +1053,9 @@ function getWorldPBRMaterials() {
       roughness: 0.75,
       metalness: 0.05,
       envMapIntensity: 1.5,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
       color: 0xffffff,
       useNormal: true,
       useRoughness: true,
@@ -1037,6 +1066,9 @@ function getWorldPBRMaterials() {
       fallbackMap: texPlaza,
       fallbackRoughness: 0.82,
       roughness: 0.85,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
       useNormal: true,
       useRoughness: true,
       normalScale: 0.78,
@@ -1046,6 +1078,9 @@ function getWorldPBRMaterials() {
       fallbackMap: texCrate,
       fallbackRoughness: 0.85,
       roughness: 0.88,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
       useNormal: true,
       useRoughness: true,
       normalScale: 0.68,
@@ -1066,7 +1101,7 @@ function getWorldPBRMaterials() {
       useRoughness: true,
       normalScale: 0.62,
     }),
-    // Светло-голубое глянцевое стекло с подсветкой и отражением (emissive: 0x335577, emissiveIntensity: 0.4, roughness: 0.1)
+    // Светло-голубое глянцевое стекло с подсветкой и polygonOffset
     glassWindow: new THREE.MeshStandardMaterial({
       color: 0x7fd4ff,
       emissive: new THREE.Color(0x335577),
@@ -1074,6 +1109,9 @@ function getWorldPBRMaterials() {
       roughness: 0.1,
       metalness: 0.35,
       envMapIntensity: 1.4,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     }),
     // Тёплое жилое стекло для оживления окон на домах
     warmGlassWindow: new THREE.MeshStandardMaterial({
@@ -1083,18 +1121,27 @@ function getWorldPBRMaterials() {
       roughness: 0.1,
       metalness: 0.25,
       envMapIntensity: 1.25,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     }),
-    // Контрастные светлые оконные рамы и подоконники
+    // Контрастные светлые оконные рамы и подоконники с polygonOffset
     windowFrame: new THREE.MeshStandardMaterial({
       color: 0xf7f1e3,
       roughness: 0.55,
       metalness: 0.05,
       envMapIntensity: 1.2,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     }),
     windowMullion: new THREE.MeshStandardMaterial({
       color: 0x3b302a,
       roughness: 0.65,
       metalness: 0.08,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     }),
     metalContainer(tintHex = 0xffffff) {
       return loadPBRMaterial('Metal041B_1K-JPG', 2, 2, {
@@ -1359,21 +1406,26 @@ function splitMergedHouseMesh(mesh, rootInverseMatrix, buildingHeight, wallMat, 
 }
 
 // Заменяет мультяшные материалы на реалистичные PBR-текстуры, сохраняя окна, рамы и двери
-// Добавляет на стены домов контрастные оконные рамы со светло-голубыми/тёплыми стёклами,
-// автоматически прижимая их к реальной плоскости стен (под свесами крыши)
+// Добавляет на стены домов контрастные оконные рамы со светло-голубыми/тёплыми стёклами.
+// Все детали сдвинуты на 0.045 вдоль внешней нормали стены (без наложения полигонов и Z-fighting)
 function addContrastingWindowsToHouse(innerRoot, finalSize, houseSeed = 0) {
   const pbr = getWorldPBRMaterials();
+  const WINDOW_NORMAL_OFFSET = 0.045; // Вынос оконной рамы от стены вдоль нормали (0.03–0.05)
+
   innerRoot.updateMatrixWorld(true);
   const invRoot = new THREE.Matrix4().copy(innerRoot.matrixWorld).invert();
+  const rootMatrix = innerRoot.matrixWorld;
+  const wallMeshes = [];
 
   const h = Math.max(3.0, finalSize.y);
   let wallMinX = Infinity, wallMaxX = -Infinity;
   let wallMinZ = Infinity, wallMaxZ = -Infinity;
   const p = new THREE.Vector3();
 
-  // Находим реальный контур стен ниже свесов крыши (14%..50% высоты здания)
+  // Собираем меши стен и их контур ниже свесов крыши (14%..50% высоты здания)
   innerRoot.traverse((obj) => {
     if (!obj.isMesh || !obj.geometry || !obj.geometry.attributes || !obj.geometry.attributes.position) return;
+    wallMeshes.push(obj);
     const relMat = new THREE.Matrix4().multiplyMatrices(invRoot, obj.matrixWorld);
     const posAttr = obj.geometry.attributes.position;
     const step = Math.max(1, Math.floor(posAttr.count / 600));
@@ -1402,43 +1454,50 @@ function addContrastingWindowsToHouse(innerRoot, finalSize, houseSeed = 0) {
   const wallCx = (wallMinX + wallMaxX) * 0.5;
   const wallCz = (wallMinZ + wallMaxZ) * 0.5;
 
-  const winW = Math.min(1.55, Math.max(0.95, Math.min(wallW, wallDep) * 0.17));
-  const winH = Math.min(1.50, Math.max(0.95, h * 0.20));
-  const frameThick = 0.13;
-  const frameDepth = 0.18;
-  const paneDepth = 0.10;
+  const winW = Math.min(1.50, Math.max(0.92, Math.min(wallW, wallDep) * 0.16));
+  const winH = Math.min(1.45, Math.max(0.92, h * 0.19));
+  const frameThick = 0.12;
+  const frameDepth = 0.12;
+  const paneDepth = 0.04;
 
   const floorsY = h >= 7.6
-    ? [Math.max(1.55, h * 0.25), Math.min(h * 0.56, h * 0.25 + winH + 1.35)]
+    ? [Math.max(1.55, h * 0.25), Math.min(h * 0.55, h * 0.25 + winH + 1.35)]
     : [Math.min(h * 0.42, Math.max(1.45, h * 0.30))];
 
   const winGroup = new THREE.Group();
   winGroup.name = 'house_contrasting_windows';
 
+  // Все элементы окна начинаются от z >= 0 (не заходят внутрь стены и не пересекают друг друга в одной плоскости)
   function makeSingleWindow(warm) {
     const wg = new THREE.Group();
     const glassMat = warm ? pbr.warmGlassWindow : pbr.glassWindow;
     const frameMat = pbr.windowFrame;
     const mullionMat = pbr.windowMullion;
 
+    // Стекло: занимает z = [0.00, 0.04]
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(winW - 0.01, winH - 0.01, paneDepth), glassMat);
+    pane.position.z = paneDepth * 0.5;
+
+    // Перекладины рамы разнесены по Z, чтобы исключить Z-fighting на перекрестии и со стеклом
+    const vMullion = new THREE.Mesh(new THREE.BoxGeometry(0.065, winH - 0.02, 0.035), mullionMat);
+    vMullion.position.z = paneDepth + 0.020;
+    const hMullion = new THREE.Mesh(new THREE.BoxGeometry(winW - 0.02, 0.065, 0.035), mullionMat);
+    hMullion.position.set(0, winH * 0.12, paneDepth + 0.030);
+
+    // Наружная рама и выступающий подоконник: z >= 0
     const topBar = new THREE.Mesh(new THREE.BoxGeometry(winW + frameThick * 2, frameThick, frameDepth), frameMat);
-    topBar.position.y = winH * 0.5 + frameThick * 0.5;
-    const botBar = new THREE.Mesh(new THREE.BoxGeometry(winW + frameThick * 2.4, frameThick * 1.25, frameDepth + 0.08), frameMat);
-    botBar.position.set(0, -winH * 0.5 - frameThick * 0.5, 0.03);
+    topBar.position.set(0, winH * 0.5 + frameThick * 0.5, frameDepth * 0.5);
+
+    const botBar = new THREE.Mesh(new THREE.BoxGeometry(winW + frameThick * 2.4, frameThick * 1.25, frameDepth + 0.06), frameMat);
+    botBar.position.set(0, -winH * 0.5 - frameThick * 0.5, (frameDepth + 0.06) * 0.5);
+
     const leftBar = new THREE.Mesh(new THREE.BoxGeometry(frameThick, winH, frameDepth), frameMat);
-    leftBar.position.x = -winW * 0.5 - frameThick * 0.5;
+    leftBar.position.set(-winW * 0.5 - frameThick * 0.5, 0, frameDepth * 0.5);
+
     const rightBar = new THREE.Mesh(new THREE.BoxGeometry(frameThick, winH, frameDepth), frameMat);
-    rightBar.position.x = winW * 0.5 + frameThick * 0.5;
+    rightBar.position.set(winW * 0.5 + frameThick * 0.5, 0, frameDepth * 0.5);
 
-    // Контрастный крестовой переплёт рамы
-    const vMullion = new THREE.Mesh(new THREE.BoxGeometry(0.07, winH, paneDepth + 0.04), mullionMat);
-    const hMullion = new THREE.Mesh(new THREE.BoxGeometry(winW, 0.07, paneDepth + 0.04), mullionMat);
-    hMullion.position.y = winH * 0.12;
-
-    const pane = new THREE.Mesh(new THREE.BoxGeometry(winW, winH, paneDepth), glassMat);
-    pane.position.z = -0.01;
-
-    wg.add(topBar, botBar, leftBar, rightBar, vMullion, hMullion, pane);
+    wg.add(pane, vMullion, hMullion, topBar, botBar, leftBar, rightBar);
     wg.traverse((o) => {
       if (o.isMesh) {
         o.castShadow = true;
@@ -1448,31 +1507,104 @@ function addContrastingWindowsToHouse(innerRoot, finalSize, houseSeed = 0) {
     return wg;
   }
 
+  // Лучевая проверка точной плоскости стены в локальных координатах innerRoot
+  const raycaster = new THREE.Raycaster();
+  const rayOriginWorld = new THREE.Vector3();
+  const rayDirWorld = new THREE.Vector3();
+  const localHit = new THREE.Vector3();
+  const worldNormal = new THREE.Vector3();
+  const localNormal = new THREE.Vector3();
+  const invNormalMat = new THREE.Matrix3().getNormalMatrix(invRoot);
+  const rootRotMat = new THREE.Matrix3().getNormalMatrix(rootMatrix);
+
+  function probeFlatWall(localOrigin, localDir, expectedNormal, halfU, halfV, uAxis) {
+    // Проверяем центр и 4 угла окна, чтобы оно гарантированно легло на ровный участок стены
+    const offsets = [
+      [0, 0],
+      [-halfU, -halfV],
+      [ halfU, -halfV],
+      [-halfU,  halfV],
+      [ halfU,  halfV],
+    ];
+    let maxOutwardCoord = -Infinity;
+    let minOutwardCoord = Infinity;
+
+    for (const [du, dv] of offsets) {
+      const oLoc = localOrigin.clone();
+      oLoc.y += dv;
+      if (uAxis === 'x') oLoc.x += du;
+      else oLoc.z += du;
+
+      rayOriginWorld.copy(oLoc).applyMatrix4(rootMatrix);
+      rayDirWorld.copy(localDir).applyMatrix3(rootRotMat).normalize();
+      raycaster.set(rayOriginWorld, rayDirWorld);
+      const hits = raycaster.intersectObjects(wallMeshes, false);
+      if (hits.length === 0) return null;
+
+      const hit = hits[0];
+      if (!hit.face) return null;
+      const objNormMat = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+      worldNormal.copy(hit.face.normal).applyMatrix3(objNormMat).normalize();
+      localNormal.copy(worldNormal).applyMatrix3(invNormalMat).normalize();
+
+      // Должна быть именно вертикальная плоская стена, обращённая наружу (не крыша и не скос)
+      if (localNormal.dot(expectedNormal) < 0.88) return null;
+
+      localHit.copy(hit.point).applyMatrix4(invRoot);
+      const proj = localHit.dot(expectedNormal);
+      if (proj > maxOutwardCoord) maxOutwardCoord = proj;
+      if (proj < minOutwardCoord) minOutwardCoord = proj;
+    }
+
+    // Если стена в этом месте имеет ступеньку/выступ > 0.14 м, пропускаем окно, чтобы не было наложений
+    if ((maxOutwardCoord - minOutwardCoord) > 0.14) return null;
+    return maxOutwardCoord + WINDOW_NORMAL_OFFSET;
+  }
+
   const frontCols = wallW >= 7.4 ? [wallCx - wallW * 0.25, wallCx + wallW * 0.25] : [wallCx];
   const sideCols = wallDep >= 7.4 ? [wallCz - wallDep * 0.25, wallCz + wallDep * 0.25] : [wallCz];
+  const halfU = winW * 0.45;
+  const halfV = winH * 0.45;
   let idx = 0;
+
+  const nFront = new THREE.Vector3(0, 0,  1), dFront = new THREE.Vector3(0, 0, -1);
+  const nBack  = new THREE.Vector3(0, 0, -1), dBack  = new THREE.Vector3(0, 0,  1);
+  const nRight = new THREE.Vector3( 1, 0, 0), dRight = new THREE.Vector3(-1, 0, 0);
+  const nLeft  = new THREE.Vector3(-1, 0, 0), dLeft  = new THREE.Vector3( 1, 0, 0);
 
   for (const wy of floorsY) {
     for (const cx of frontCols) {
-      const wFront = makeSingleWindow(((houseSeed + idx++) % 3) === 0);
-      wFront.position.set(cx, wy, wallMaxZ + 0.02);
-      winGroup.add(wFront);
+      const zFront = probeFlatWall(new THREE.Vector3(cx, wy, wallMaxZ + 2.5), dFront, nFront, halfU, halfV, 'x');
+      if (zFront !== null) {
+        const wFront = makeSingleWindow(((houseSeed + idx++) % 3) === 0);
+        wFront.position.set(cx, wy, zFront);
+        winGroup.add(wFront);
+      }
 
-      const wBack = makeSingleWindow(((houseSeed + idx++) % 3) === 1);
-      wBack.position.set(cx, wy, wallMinZ - 0.02);
-      wBack.rotation.y = Math.PI;
-      winGroup.add(wBack);
+      const zBackProj = probeFlatWall(new THREE.Vector3(cx, wy, wallMinZ - 2.5), dBack, nBack, halfU, halfV, 'x');
+      if (zBackProj !== null) {
+        const wBack = makeSingleWindow(((houseSeed + idx++) % 3) === 1);
+        wBack.position.set(cx, wy, -zBackProj);
+        wBack.rotation.y = Math.PI;
+        winGroup.add(wBack);
+      }
     }
     for (const cz of sideCols) {
-      const wRight = makeSingleWindow(((houseSeed + idx++) % 3) === 0);
-      wRight.position.set(wallMaxX + 0.02, wy, cz);
-      wRight.rotation.y = Math.PI / 2;
-      winGroup.add(wRight);
+      const xRight = probeFlatWall(new THREE.Vector3(wallMaxX + 2.5, wy, cz), dRight, nRight, halfU, halfV, 'z');
+      if (xRight !== null) {
+        const wRight = makeSingleWindow(((houseSeed + idx++) % 3) === 0);
+        wRight.position.set(xRight, wy, cz);
+        wRight.rotation.y = Math.PI / 2;
+        winGroup.add(wRight);
+      }
 
-      const wLeft = makeSingleWindow(((houseSeed + idx++) % 3) === 1);
-      wLeft.position.set(wallMinX - 0.02, wy, cz);
-      wLeft.rotation.y = -Math.PI / 2;
-      winGroup.add(wLeft);
+      const xLeftProj = probeFlatWall(new THREE.Vector3(wallMinX - 2.5, wy, cz), dLeft, nLeft, halfU, halfV, 'z');
+      if (xLeftProj !== null) {
+        const wLeft = makeSingleWindow(((houseSeed + idx++) % 3) === 1);
+        wLeft.position.set(-xLeftProj, wy, cz);
+        wLeft.rotation.y = -Math.PI / 2;
+        winGroup.add(wLeft);
+      }
     }
   }
 
@@ -2003,17 +2135,17 @@ function buildWorld() {
     const chim = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.4, 1.1), stdMat(0xa64b3a, 0.85));
     chim.position.set(w * 0.24, h + 2.5, -dep * 0.16); chim.castShadow = true;
 
-    const doorFrame = new THREE.Mesh(new THREE.BoxGeometry(1.98, 2.9, 0.22), trimMat);
-    doorFrame.position.set(0, 1.9, dep / 2 + 0.06);
-    const door = new THREE.Mesh(new THREE.BoxGeometry(1.72, 2.72, 0.26), doorMat);
-    door.position.set(0, 1.85, dep / 2 + 0.09);
+    const doorFrame = new THREE.Mesh(new THREE.BoxGeometry(1.98, 2.9, 0.14), trimMat);
+    doorFrame.position.set(0, 1.9, dep / 2 + 0.11);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(1.72, 2.72, 0.08), doorMat);
+    door.position.set(0, 1.85, dep / 2 + 0.18);
 
     g.add(base, walls, roof, chim, doorFrame, door);
     for (const sx of [-w * 0.29, w * 0.29]) {
-      const frame = new THREE.Mesh(new THREE.BoxGeometry(1.84, 1.84, 0.22), trimMat);
-      frame.position.set(sx, 3.3, dep / 2 + 0.06);
-      const glass = new THREE.Mesh(new THREE.BoxGeometry(1.44, 1.44, 0.26), winMat);
-      glass.position.set(sx, 3.3, dep / 2 + 0.09);
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(1.84, 1.84, 0.12), pbrMats.windowFrame);
+      frame.position.set(sx, 3.3, dep / 2 + 0.10);
+      const glass = new THREE.Mesh(new THREE.BoxGeometry(1.44, 1.44, 0.06), winMat);
+      glass.position.set(sx, 3.3, dep / 2 + 0.17);
       g.add(frame, glass);
     }
     scene.add(g);
@@ -3667,7 +3799,7 @@ function loadVehicleVariants(filename, targetLength = 4.6) {
         },
         undefined,
         (err) => {
-          console.warn(`Не удалось загрузить машину ${MODEL_DIR}${filename}, оставлен процедурный fallback:`, err);
+          console.warn(`Не удалось загрузить машину ${MODEL_DIR}${filename}:`, err);
           checkLocalGlbProtocolHint();
           resolve(null);
         }
@@ -3678,62 +3810,33 @@ function loadVehicleVariants(filename, targetLength = 4.6) {
   return vehicleVariantsCache.get(cacheKey);
 }
 
-function createFallbackCarVisual(isMaintenance, colorHex) {
-  const g = new THREE.Group();
-  const bodyMat = stdMat(colorHex, 0.42, 0.35);
-  const cabMat = stdMat(isMaintenance ? 0xf2b82e : colorHex, 0.45, 0.30);
-  const darkMat = stdMat(0x23252a, 0.85);
-  const glassMat = new THREE.MeshStandardMaterial({ color: 0x7bc8eb, roughness: 0.15, metalness: 0.35 });
-
-  const len = isMaintenance ? 5.0 : 4.4;
-  const wid = isMaintenance ? 2.1 : 1.88;
-  const hull = new THREE.Mesh(new THREE.BoxGeometry(wid, 0.78, len), bodyMat);
-  hull.position.y = -0.18; hull.castShadow = true; hull.receiveShadow = true;
-  const cab = new THREE.Mesh(new THREE.BoxGeometry(wid * 0.88, 0.72, isMaintenance ? 1.85 : 2.15), cabMat);
-  cab.position.set(0, 0.48, isMaintenance ? 1.05 : -0.15); cab.castShadow = true;
-  const win = new THREE.Mesh(new THREE.BoxGeometry(wid * 0.90, 0.48, isMaintenance ? 1.45 : 1.75), glassMat);
-  win.position.set(0, 0.52, isMaintenance ? 1.05 : -0.15);
-  g.add(hull, cab, win);
-
-  const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.28, 12);
-  wheelGeo.rotateZ(Math.PI / 2);
-  for (const sx of [-wid * 0.48, wid * 0.48]) {
-    for (const sz of [-len * 0.32, len * 0.32]) {
-      const w = new THREE.Mesh(wheelGeo, darkMat);
-      w.position.set(sx, -0.48, sz); w.castShadow = true;
-      g.add(w);
-    }
-  }
-  return g;
-}
-
 const VEHICLE_SPAWNS = [
   // Центральная площадь (рядом со стартом, не мешают спавну хряка и трактору)
-  { file: 'bokaroo_67_-_low-poly_model.glb', x: -12.5, z:  -5.5, yaw:  0.45, len: 4.5, name: 'Бокару-67',   tint: 0xd94436 },
-  { file: 'bokaroo_67_-_low-poly_model.glb', x:  10.5, z:  13.5, yaw: -0.65, len: 4.5, name: 'Бокару-67',   tint: 0x3b86d9 },
-  { file: 'maintenance_vehicles.glb',        x:  -9.5, z:  15.5, yaw:  0.80, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x: -12.5, z:  -5.5, yaw:  0.45, len: 4.5, name: 'Бокару-67' },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  10.5, z:  13.5, yaw: -0.65, len: 4.5, name: 'Бокару-67' },
+  { file: 'maintenance_vehicles.glb',        x:  -9.5, z:  15.5, yaw:  0.80, len: 5.2, name: 'спецтехнику' },
 
   // Северная дорога -> Большая ферма
-  { file: 'bokaroo_67_-_low-poly_model.glb', x:   2.6, z: -34.0, yaw:  0.06, len: 4.5, name: 'Бокару-67',   tint: 0xe86b2c },
-  { file: 'maintenance_vehicles.glb',        x:  -2.7, z: -64.0, yaw:  Math.PI - 0.05, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
-  { file: 'maintenance_vehicles.glb',        x:   2.7, z:-102.0, yaw:  0.00, len: 5.2, name: 'спецтехнику', tint: 0x4ca65c },
-  { file: 'bokaroo_67_-_low-poly_model.glb', x:  11.5, z:-132.0, yaw: -0.40, len: 4.5, name: 'Бокару-67',   tint: 0x489c68 },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:   2.6, z: -34.0, yaw:  0.06, len: 4.5, name: 'Бокару-67' },
+  { file: 'maintenance_vehicles.glb',        x:  -2.7, z: -64.0, yaw:  Math.PI - 0.05, len: 5.2, name: 'спецтехнику' },
+  { file: 'maintenance_vehicles.glb',        x:   2.7, z:-102.0, yaw:  0.00, len: 5.2, name: 'спецтехнику' },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  11.5, z:-132.0, yaw: -0.40, len: 4.5, name: 'Бокару-67' },
 
   // Южная дорога -> Озеро и пляж
-  { file: 'bokaroo_67_-_low-poly_model.glb', x:  -2.6, z:  36.0, yaw:  Math.PI, len: 4.5, name: 'Бокару-67', tint: 0xd94436 },
-  { file: 'maintenance_vehicles.glb',        x:   2.7, z:  72.0, yaw:  0.04, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
-  { file: 'bokaroo_67_-_low-poly_model.glb', x: -11.0, z: 112.0, yaw:  0.55, len: 4.5, name: 'Бокару-67',   tint: 0x3b86d9 },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  -2.6, z:  36.0, yaw:  Math.PI, len: 4.5, name: 'Бокару-67' },
+  { file: 'maintenance_vehicles.glb',        x:   2.7, z:  72.0, yaw:  0.04, len: 5.2, name: 'спецтехнику' },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x: -11.0, z: 112.0, yaw:  0.55, len: 4.5, name: 'Бокару-67' },
 
   // Восточная дорога -> Стройплощадка
-  { file: 'maintenance_vehicles.glb',        x:  34.0, z:   2.7, yaw:  Math.PI / 2, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
-  { file: 'bokaroo_67_-_low-poly_model.glb', x:  76.0, z:  -2.7, yaw: -Math.PI / 2, len: 4.5, name: 'Бокару-67',   tint: 0xc93b6b },
-  { file: 'maintenance_vehicles.glb',        x: 118.0, z:  -2.5, yaw:  Math.PI / 2 + 0.15, len: 5.2, name: 'спецтехнику', tint: 0xe68b24 },
-  { file: 'maintenance_vehicles.glb',        x: 136.0, z: -24.0, yaw:  0.35, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
+  { file: 'maintenance_vehicles.glb',        x:  34.0, z:   2.7, yaw:  Math.PI / 2, len: 5.2, name: 'спецтехнику' },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:  76.0, z:  -2.7, yaw: -Math.PI / 2, len: 4.5, name: 'Бокару-67' },
+  { file: 'maintenance_vehicles.glb',        x: 118.0, z:  -2.5, yaw:  Math.PI / 2 + 0.15, len: 5.2, name: 'спецтехнику' },
+  { file: 'maintenance_vehicles.glb',        x: 136.0, z: -24.0, yaw:  0.35, len: 5.2, name: 'спецтехнику' },
 
   // Западная дорога -> Лес и скейт-парк
-  { file: 'bokaroo_67_-_low-poly_model.glb', x: -36.0, z:  -2.7, yaw: -Math.PI / 2, len: 4.5, name: 'Бокару-67',   tint: 0x3b86d9 },
-  { file: 'maintenance_vehicles.glb',        x: -78.0, z:   2.7, yaw:  Math.PI / 2, len: 5.2, name: 'спецтехнику', tint: 0xf0b22e },
-  { file: 'bokaroo_67_-_low-poly_model.glb', x:-114.0, z:   7.5, yaw: -Math.PI / 2 - 0.25, len: 4.5, name: 'Бокару-67', tint: 0xd94436 },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x: -36.0, z:  -2.7, yaw: -Math.PI / 2, len: 4.5, name: 'Бокару-67' },
+  { file: 'maintenance_vehicles.glb',        x: -78.0, z:   2.7, yaw:  Math.PI / 2, len: 5.2, name: 'спецтехнику' },
+  { file: 'bokaroo_67_-_low-poly_model.glb', x:-114.0, z:   7.5, yaw: -Math.PI / 2 - 0.25, len: 4.5, name: 'Бокару-67' },
 ];
 
 // Резервируем площадки под припаркованные машины, чтобы деревья в них не прорастали
@@ -3758,96 +3861,79 @@ function clearAndSpawnVehicles() {
     const isMaint = spec.file === 'maintenance_vehicles.glb';
     const variantIdx = isMaint ? (maintCounter++) : 0;
 
-    const visualHolder = new THREE.Group();
-    const fallbackVis = createFallbackCarVisual(isMaint, spec.tint);
-    visualHolder.add(fallbackVis);
-    scene.add(visualHolder);
-
-    const initHalfX = isMaint ? 1.08 : 0.96;
-    const initHalfY = isMaint ? 0.92 : 0.80;
-    const initHalfZ = spec.len * 0.5;
-
-    const body = new CANNON.Body({
-      mass: 68,
-      material: matVehicle,
-      linearDamping: 0.26,
-      angularDamping: 0.34,
-      position: new CANNON.Vec3(spec.x, initHalfY + 0.05, spec.z),
-    });
-    body.quaternion.setFromEuler(0, spec.yaw, 0);
-    body.addShape(new CANNON.Box(new CANNON.Vec3(initHalfX, initHalfY, initHalfZ)));
-    body.sleepSpeedLimit = 0.22;
-    body.sleepTimeLimit = 1.0;
-
-    const vehObj = {
-      kind: 'vehicle',
-      name: spec.name,
-      mesh: visualHolder,
-      body,
-      hitCooldown: 0,
-      pushCooldown: 0,
-      halfY: initHalfY,
-      startSpec: spec,
-    };
-    body.userData = { vehicleObj: vehObj };
-
-    // Реакция на толчок/сдвиг хряком и столкновение с другими объектами
-    body.addEventListener('collide', (e) => {
-      const other = e.body;
-      if (other === playerBody && !inTractor) {
-        const pSpd = playerBody.velocity.length();
-        if (pSpd > 1.8) {
-          markByPlayer(body, 3.8);
-          body.wakeUp();
-          const pushDir = body.position.vsub(playerBody.position);
-          pushDir.y = 0;
-          if (pushDir.lengthSquared() > 0.001) pushDir.normalize();
-          const shove = Math.min(260, pSpd * (isRagdoll ? 26 : 19));
-          body.applyImpulse(new CANNON.Vec3(pushDir.x * shove, isRagdoll ? 75 : 35, pushDir.z * shove));
-          if (vehObj.pushCooldown <= 0) {
-            vehObj.pushCooldown = 1.15;
-            sfx.carHit();
-            spawnBurst(body.position, 0xffe44a, 6, 6, 0.9);
-            if (isRagdoll) addTrick('Рэгдолл-ДТП!', 240, body.position, '#ffbe3b');
-            else addTrick(`Сдвинул ${vehObj.name}!`, 140, body.position, '#75e6ff');
-          }
-        }
-      } else if (other === tractor.body && inTractor) {
-        markByPlayer(body, 4.0);
-      } else if (isBodyByPlayer(other)) {
-        const impact = Math.abs(e.contact.getImpactVelocityAlongNormal());
-        if (impact > 2.5) markByPlayer(body, 3.5);
-      }
-    });
-
-    world.addBody(body);
-    vehicles.push(vehObj);
-
-    // Асинхронно подгружаем 3D-модель .glb и подгоняем её в контейнер + точный коллайдер
+    // Спавним ТОЛЬКО реальные 3D-модели .glb (без примитивных кубических коробок на колёсах)
     loadVehicleVariants(spec.file, spec.len).then((variants) => {
       if (!variants || myEpoch !== vehicleSpawnEpoch) return;
       const picked = variants[variantIdx % variants.length];
       if (!picked) return;
 
+      const visualHolder = new THREE.Group();
       const modelClone = picked.template.clone(true);
-      visualHolder.remove(fallbackVis);
       visualHolder.add(modelClone);
 
       const hx = Math.max(0.55, picked.size.x * 0.5);
       const hy = Math.max(0.45, picked.size.y * 0.5);
       const hz = Math.max(0.70, picked.size.z * 0.5);
-      const oldHy = vehObj.halfY;
-      vehObj.halfY = hy;
 
-      body.shapes.length = 0;
-      body.shapeOffsets.length = 0;
-      body.shapeOrientations.length = 0;
+      const body = new CANNON.Body({
+        mass: 68,
+        material: matVehicle,
+        linearDamping: 0.26,
+        angularDamping: 0.34,
+        position: new CANNON.Vec3(spec.x, hy + 0.05, spec.z),
+      });
+      body.quaternion.setFromEuler(0, spec.yaw, 0);
       body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
-      body.updateMassProperties();
-      body.updateBoundingRadius();
-      if (Math.abs(body.position.y - (oldHy + 0.05)) < 0.6) {
-        body.position.y = hy + 0.05;
-      }
+      body.sleepSpeedLimit = 0.22;
+      body.sleepTimeLimit = 1.0;
+
+      visualHolder.position.copy(body.position);
+      visualHolder.quaternion.copy(body.quaternion);
+      scene.add(visualHolder);
+
+      const vehObj = {
+        kind: 'vehicle',
+        name: spec.name,
+        mesh: visualHolder,
+        body,
+        hitCooldown: 0,
+        pushCooldown: 0,
+        halfY: hy,
+        startSpec: spec,
+      };
+      body.userData = { vehicleObj: vehObj };
+
+      // Реакция на толчок/сдвиг хряком и столкновение с другими объектами
+      body.addEventListener('collide', (e) => {
+        const other = e.body;
+        if (other === playerBody && !inTractor) {
+          const pSpd = playerBody.velocity.length();
+          if (pSpd > 1.8) {
+            markByPlayer(body, 3.8);
+            body.wakeUp();
+            const pushDir = body.position.vsub(playerBody.position);
+            pushDir.y = 0;
+            if (pushDir.lengthSquared() > 0.001) pushDir.normalize();
+            const shove = Math.min(260, pSpd * (isRagdoll ? 26 : 19));
+            body.applyImpulse(new CANNON.Vec3(pushDir.x * shove, isRagdoll ? 75 : 35, pushDir.z * shove));
+            if (vehObj.pushCooldown <= 0) {
+              vehObj.pushCooldown = 1.15;
+              sfx.carHit();
+              spawnBurst(body.position, 0xffe44a, 6, 6, 0.9);
+              if (isRagdoll) addTrick('Рэгдолл-ДТП!', 240, body.position, '#ffbe3b');
+              else addTrick(`Сдвинул ${vehObj.name}!`, 140, body.position, '#75e6ff');
+            }
+          }
+        } else if (other === tractor.body && inTractor) {
+          markByPlayer(body, 4.0);
+        } else if (isBodyByPlayer(other)) {
+          const impact = Math.abs(e.contact.getImpactVelocityAlongNormal());
+          if (impact > 2.5) markByPlayer(body, 3.5);
+        }
+      });
+
+      world.addBody(body);
+      vehicles.push(vehObj);
     });
   }
 }
