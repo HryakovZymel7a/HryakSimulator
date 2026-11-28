@@ -2882,6 +2882,8 @@ let slideTrickCooldown = 0;
 let isRagdoll = false;
 let airTime = 0;
 let airSpinAccum = 0;
+let hoofDustStepTimer = 0;
+let hoofDustSide = 1;
 
 playerBody.addEventListener('collide', (e) => {
   const up = new CANNON.Vec3();
@@ -3248,7 +3250,10 @@ function doHeadbutt() {
   }
   if (actionCooldown > 0) return;
   actionCooldown = 0.28;
-  kickAnimTimer = 0.22;
+  kickAnimTimer = 0.25;
+  if (playerPig.userData && playerPig.userData.triggerHeadbutt) {
+    playerPig.userData.triggerHeadbutt();
+  }
   sfx.butt();
 
   const aim = getAimDirection();
@@ -3947,10 +3952,36 @@ function updatePlayer(dt, input) {
     playerPig.position.set(p.x, p.y - 0.58, p.z);
     playerPig.rotation.set(0, playerYaw, 0);
 
+    const horizSpeed = Math.hypot(playerBody.velocity.x, playerBody.velocity.z);
     let anim = 'idle';
     if (kickAnimTimer > 0) anim = 'kick';
-    else if (grounded && moving) anim = 'run';
+    else if (!grounded) anim = 'jump';
+    else if (moving) anim = 'run';
+    else anim = 'idle';
+
     playerPig.userData.update(dt, anim);
+
+    // Спавн лёгких частиц пыли под копытами при беге (speed > 0.1)
+    if (grounded && horizSpeed > 0.1) {
+      hoofDustStepTimer -= dt * (1.0 + horizSpeed * 0.14);
+      if (hoofDustStepTimer <= 0) {
+        hoofDustStepTimer = 0.24;
+        hoofDustSide *= -1;
+        const sideX = Math.cos(playerYaw) * 0.34 * hoofDustSide;
+        const sideZ = -Math.sin(playerYaw) * 0.34 * hoofDustSide;
+        const backX = -Math.sin(playerYaw) * 0.42;
+        const backZ = -Math.cos(playerYaw) * 0.42;
+        spawnBurst(
+          new THREE.Vector3(p.x + sideX + backX, 0.05, p.z + sideZ + backZ),
+          0xd8cfb8,
+          2,
+          2.1,
+          0.52
+        );
+      }
+    } else {
+      hoofDustStepTimer = 0.08;
+    }
   }
 
   playerPig.userData.updateShadow(0.03);

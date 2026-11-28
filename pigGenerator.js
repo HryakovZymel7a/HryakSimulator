@@ -73,18 +73,18 @@ function buildCachedGlbBreedMaterials(templateRoot) {
           else texMap.encoding = THREE.sRGBEncoding;
           texMap.needsUpdate = true;
         }
-        // MeshBasicMaterial с цветом 0xffdfd4 и SRGBColorSpace: полностью убирает тёмные запечённые тени по бокам
-        if (oldMat.map) {
-          oldMat.map.colorSpace = THREE.SRGBColorSpace;
-          oldMat.map.needsUpdate = true;
-        }
-        const basicMat = new THREE.MeshBasicMaterial({
-          map: oldMat.map || null,
-          color: 0xffdfd4,
+        // MeshStandardMaterial с тёплым emissive: реагирует на солнце и тени без провала в чёрный силуэт со спины
+        const stdMat = new THREE.MeshStandardMaterial({
+          map: texMap,
+          color: 0xffe8de,
+          roughness: 0.72,
+          metalness: 0.0,
+          emissive: new THREE.Color(0x2e1f1a),
+          emissiveIntensity: 0.35,
           side: THREE.DoubleSide,
         });
         matIndexMap.set(oldMat, originalMats.length);
-        originalMats.push(basicMat);
+        originalMats.push(stdMat);
       }
       const idx = matIndexMap.get(oldMat);
       converted.push(originalMats[idx]);
@@ -96,7 +96,7 @@ function buildCachedGlbBreedMaterials(templateRoot) {
   });
 
   const breedTints = {
-    [PIG_TYPES.CLASSIC]: null, // Базовый светлый MeshLambertMaterial с текстурой hryak.glb
+    [PIG_TYPES.CLASSIC]: null, // Базовый MeshStandardMaterial с текстурой hryak.glb
     [PIG_TYPES.CURLY]:   { color: 0xffe6da },
     [PIG_TYPES.APPLE]:   { color: 0xe6453c },
     [PIG_TYPES.SPOTTED]: { color: 0xf4f6fc },
@@ -201,21 +201,39 @@ export function preloadHryakModel() {
           rawModel.position.y -= scaledBox.min.y;
           template.updateMatrixWorld(true);
 
-          const materialsByBreed = buildCachedGlbBreedMaterials(template);
+          // Запекаем выровненную матрицу прямо в геометрию мешей, чтобы в буфере вершин:
+          // X — лево/право (центр 0), Y — высота от 0 (копыта) до maxY, Z — хвост (minZ) -> пятак (maxZ)
+          const bakedTemplate = new THREE.Group();
+          bakedTemplate.name = 'hryak_glb_baked_template';
+          template.traverse((obj) => {
+            if (!obj.isMesh || !obj.geometry) return;
+            const bakedGeo = obj.geometry.clone();
+            bakedGeo.applyMatrix4(obj.matrixWorld);
+            bakedGeo.computeVertexNormals();
+            bakedGeo.computeBoundingBox();
+            bakedGeo.computeBoundingSphere();
+            const bakedMesh = new THREE.Mesh(bakedGeo, obj.material);
+            bakedMesh.name = obj.name || 'geometry_0';
+            bakedMesh.castShadow = true;
+            bakedMesh.receiveShadow = true;
+            bakedTemplate.add(bakedMesh);
+          });
+
+          const materialsByBreed = buildCachedGlbBreedMaterials(bakedTemplate);
 
           let triangles = 0;
-          template.traverse((obj) => {
+          bakedTemplate.traverse((obj) => {
             if (obj.isMesh && obj.geometry) {
               const g = obj.geometry;
               triangles += g.index ? g.index.count / 3 : g.attributes.position.count / 3;
             }
           });
 
-          // Якорь передней точки пятачка (строго спереди по +Z после разворота на 180°)
+          // Якорь передней точки пятачка (строго спереди по +Z)
           const snoutPos = new THREE.Vector3(0, finalSize.y * 0.54, finalSize.z * 0.52);
 
           hryakTemplateCache = {
-            template,
+            template: bakedTemplate,
             size: finalSize,
             snoutPos,
             triangles: Math.round(triangles),
@@ -808,12 +826,83 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
   let disposed = false;
   let shadowBaseScaleX = 1.0;
   let shadowBaseScaleZ = 1.0;
+  const animatedGlbMeshes = [];
 
   function attachGlbClone(cache) {
     if (!cache || disposed || usingGlb) return;
     const clone = cache.template.clone(true);
     const matSet = cache.materialsByBreed.get(key) || cache.materialsByBreed.get(PIG_TYPES.CLASSIC);
     applyCachedGlbMaterials(clone, matSet);
+
+    // Клонируем геометрию меша, сохраняем basePositions и границы модели для вершинной анимации
+    clone.traverse((obj) => {
+      if (!obj.isMesh || !obj.geometry || !obj.geometry.attributes || !obj.geometry.attributes.position) return;
+      const clonedGeo = obj.geometry.clone();
+      obj.geometry = clonedGeo;
+
+      const posAttr = clonedGeo.attributes.position;
+      const basePositions = new Float32Array(posAttr.array);
+
+      let minY = Infinity, maxY = -Infinity;
+      let minZ = Infinity, maxZ = -Infinity;
+      for (let i = 0; i < basePositions.length; i += 3) {
+        const py = basePositions[i + 1];
+        const pz = basePositions[i + 2];
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+        if (pz < minZ) minZ = pz;
+        if (pz > maxZ) maxZ = pz;
+      }
+
+      const height = Math.max(0.001, maxY - minY);
+      const length = Math.max(0.001, maxZ - minZ);
+      const legYLimit = minY + height * 0.28;
+      const tailZLimit = minZ + length * 0.15;
+      const headZLimit = maxZ - length * 0.28;
+      const vertCount = basePositions.length / 3;
+
+      // Предрасчитанные веса зон для быстрого обновления 7667 вершин на 60 FPS
+      const legWeights = new Float32Array(vertCount);
+      const legDiag = new Int8Array(vertCount);   // +1: (x<0,z>0) или (x>0,z<0); -1: остальные две лапы
+      const legQuad = new Uint8Array(vertCount);  // 0..3: индекс квадранта для хаотичного рэгдолла
+      const tailWeights = new Float32Array(vertCount);
+      const headWeights = new Float32Array(vertCount);
+
+      for (let v = 0; v < vertCount; v++) {
+        const bx = basePositions[v * 3];
+        const by = basePositions[v * 3 + 1];
+        const bz = basePositions[v * 3 + 2];
+
+        if (by < legYLimit) {
+          legWeights[v] = (legYLimit - by) / (height * 0.28);
+          const isDiagA = (bx < 0 && bz > 0) || (bx > 0 && bz < 0);
+          legDiag[v] = isDiagA ? 1 : -1;
+          legQuad[v] = (bx >= 0 ? 1 : 0) + (bz >= 0 ? 2 : 0);
+        }
+        if (bz < tailZLimit) {
+          tailWeights[v] = (tailZLimit - bz) / (length * 0.15);
+        }
+        if (bz > headZLimit) {
+          headWeights[v] = (bz - headZLimit) / (length * 0.28);
+        }
+      }
+
+      animatedGlbMeshes.push({
+        posAttr,
+        basePositions,
+        minY,
+        maxY,
+        minZ,
+        maxZ,
+        height,
+        length,
+        legWeights,
+        legDiag,
+        legQuad,
+        tailWeights,
+        headWeights,
+      });
+    });
 
     // Аксессуары для секретного Золотого и Яблочного хряка поверх .glb
     if (key === PIG_TYPES.GOLDEN) {
@@ -869,25 +958,35 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
     }
   });
 
-  // Пружинные переменные для Squash & Stretch (сжатие-растяжение при приземлении) и выпада
+  // Пружинные переменные для Squash & Stretch, бега, прыжка, удара и рэгдолла
   let time = phase;
+  let runPhase = phase;
+  let runBlend = 0;
+  let jumpBlend = 0;
+  let ragdollBlend = 0;
   let squash = 0;
   let squashVel = 0;
   let kickLunge = 0;
+  let buttTimer = 0;
+  const BUTT_DURATION = 0.25;
 
   function triggerLand(strength = 1.0) {
     const clamped = Math.max(0.25, Math.min(1.5, strength));
-    squash = Math.min(0.45, squash + 0.28 * clamped);
-    squashVel = -1.6 * clamped;
+    squash = Math.min(0.40, squash + 0.26 * clamped);
+    squashVel = -1.5 * clamped;
+  }
+
+  function triggerHeadbutt() {
+    buttTimer = BUTT_DURATION;
   }
 
   function update(dt, state = 'idle') {
     const safeDt = Math.min(dt, 0.1);
     time += safeDt;
 
-    // Пружинная физика squash & stretch (затухающее упругое колебание)
-    const springK = 140;
-    const damping = 12;
+    // Пружинная физика squash & stretch при приземлении
+    const springK = 145;
+    const damping = 12.5;
     squashVel += (-springK * squash - damping * squashVel) * safeDt;
     squash += squashVel * safeDt;
     if (Math.abs(squash) < 0.002 && Math.abs(squashVel) < 0.01) {
@@ -895,71 +994,167 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
       squashVel = 0;
     }
 
-    // Плавный откат выпада при «Боднуть»
-    if (state === 'kick') {
+    // Резкий удар (kick) на 0.25 сек
+    if (state === 'kick' && buttTimer <= 0) {
+      buttTimer = BUTT_DURATION;
+    }
+    if (buttTimer > 0) {
+      buttTimer = Math.max(0, buttTimer - safeDt);
+      const prog = 1.0 - (buttTimer / BUTT_DURATION);
+      kickLunge = Math.sin(Math.pow(prog, 0.65) * Math.PI);
+    } else if (state === 'kick') {
       kickLunge += (1.0 - kickLunge) * Math.min(1, safeDt * 24);
     } else {
-      kickLunge += (0.0 - kickLunge) * Math.min(1, safeDt * 14);
+      kickLunge += (0.0 - kickLunge) * Math.min(1, safeDt * 16);
+    }
+
+    const isRun = state === 'run';
+    const isWalk = state === 'walk';
+    const isMovingState = isRun || isWalk;
+    const isJump = state === 'jump';
+    const isRag = state === 'ragdoll';
+
+    runBlend += ((isMovingState ? (isRun ? 1.0 : 0.6) : 0.0) - runBlend) * Math.min(1, safeDt * 14);
+    jumpBlend += ((isJump ? 1.0 : 0.0) - jumpBlend) * Math.min(1, safeDt * 14);
+    ragdollBlend += ((isRag ? 1.0 : 0.0) - ragdollBlend) * Math.min(1, safeDt * 16);
+
+    if (runBlend > 0.01) {
+      runPhase += safeDt * (isRun ? 17.5 : 11.5);
     }
 
     const sqX = 1 + squash * 0.72;
     const sqY = Math.max(0.62, 1 - squash * 0.95);
     const sqZ = 1 + squash * 0.55;
 
-    // 1) Анимация поверх ./models/hryak.glb (и общего контейнера animPivot)
+    // 1) Вершинная анимация лап, головы, хвоста и корпуса для ./models/hryak.glb
     if (usingGlb) {
-      if (state === 'ragdoll') {
-        const t = time * 18;
+      const sinRun = Math.sin(runPhase);
+      const cosRun = Math.cos(runPhase);
+      const strideAmp = 0.29 * runBlend;
+      const liftAmp = 0.14 * runBlend;
+
+      const tailWagX = Math.sin(time * (isMovingState ? 20.0 : 5.5)) * (isMovingState ? 0.15 * runBlend : 0.035);
+      const tailWagY = Math.cos(time * (isMovingState ? 20.0 : 5.5)) * (isMovingState ? 0.04 * runBlend : 0.012);
+
+      // Хаотичные частоты дёрганья для каждой из 4 лап и головы в рэгдолле (Goat Simulator)
+      const rt = time;
+      const ragLegX = [
+        Math.sin(rt * 27.0) * 0.24,
+        Math.sin(rt * 23.0 + 1.9) * 0.24,
+        Math.sin(rt * 31.0 + 3.7) * 0.24,
+        Math.sin(rt * 25.0 + 5.1) * 0.24,
+      ];
+      const ragLegY = [
+        Math.cos(rt * 29.0 + 0.6) * 0.19,
+        Math.cos(rt * 21.0 + 2.4) * 0.19,
+        Math.cos(rt * 26.0 + 4.1) * 0.19,
+        Math.cos(rt * 33.0 + 1.2) * 0.19,
+      ];
+      const ragLegZ = [
+        Math.sin(rt * 24.0 + 1.1) * 0.30,
+        Math.sin(rt * 30.0 + 3.2) * 0.30,
+        Math.sin(rt * 22.0 + 5.0) * 0.30,
+        Math.sin(rt * 28.0 + 0.4) * 0.30,
+      ];
+      const ragHeadX = Math.sin(rt * 22.0) * 0.26 * ragdollBlend;
+      const ragHeadY = Math.cos(rt * 18.0 + 0.8) * 0.22 * ragdollBlend;
+      const ragHeadZ = Math.sin(rt * 15.0 + 2.1) * 0.12 * ragdollBlend;
+      const ragTailX = Math.sin(rt * 34.0) * 0.20 * ragdollBlend;
+      const ragTailY = Math.cos(rt * 29.0) * 0.14 * ragdollBlend;
+
+      const stretchY = 1.0 + 0.15 * jumpBlend;
+      const squeezeXZ = 1.0 / Math.sqrt(stretchY);
+      const idleBreath = (!isMovingState && !isJump && !isRag) ? Math.sin(time * 2.6) * 0.025 : 0.0;
+
+      for (let mIdx = 0; mIdx < animatedGlbMeshes.length; mIdx++) {
+        const entry = animatedGlbMeshes[mIdx];
+        const posArr = entry.posAttr.array;
+        const base = entry.basePositions;
+        const { minY, height, legWeights, legDiag, legQuad, tailWeights, headWeights } = entry;
+        const vertCount = legWeights.length;
+
+        for (let v = 0; v < vertCount; v++) {
+          const i = v * 3;
+          let x = base[i];
+          let y = base[i + 1];
+          let z = base[i + 2];
+
+          const lw = legWeights[v];
+          if (lw > 0) {
+            // Бег / ходьба: диагональные пары лап (x<0,z>0 + x>0,z<0) в одной фазе, остальные две в противофазе
+            if (runBlend > 0.005) {
+              const diag = legDiag[v];
+              const s = sinRun * diag;
+              const c = cosRun * diag;
+              z += s * strideAmp * lw;
+              if (c > 0) y += c * liftAmp * lw;
+            }
+            // Прыжок: поджимаем нижние вершины лап вверх по Y и слегка к центру по Z
+            if (jumpBlend > 0.005) {
+              y += 0.27 * lw * jumpBlend;
+              z -= (z >= 0 ? 0.11 : -0.11) * lw * jumpBlend;
+            }
+            // Рэгдолл: хаотичное дёрганье каждой лапы по X, Y, Z
+            if (ragdollBlend > 0.005) {
+              const q = legQuad[v];
+              const rlw = lw * ragdollBlend;
+              x += ragLegX[q] * rlw;
+              y += ragLegY[q] * rlw;
+              z += ragLegZ[q] * rlw;
+            }
+          }
+
+          // Хвост (z < minZ + length * 0.15): виляние при беге/покое и бешенное вращение в рэгдолле
+          const tw = tailWeights[v];
+          if (tw > 0) {
+            x += (tailWagX + ragTailX) * tw;
+            y += (tailWagY + ragTailY) * tw;
+          }
+
+          // Голова и пятак (z > maxZ - length * 0.28): удар (kick) вниз по Y и вперёд по Z + мотание в рэгдолле
+          const hw = headWeights[v];
+          if (hw > 0) {
+            if (kickLunge > 0.005) {
+              y -= 0.36 * kickLunge * hw;
+              z += 0.46 * kickLunge * hw;
+            }
+            if (ragdollBlend > 0.005) {
+              x += ragHeadX * hw;
+              y += ragHeadY * hw;
+              z += ragHeadZ * hw;
+            }
+          }
+
+          // Вытягивание всего корпуса вверх в прыжке (с сохранением объёма)
+          if (jumpBlend > 0.005) {
+            y = minY + (y - minY) * stretchY;
+            x *= squeezeXZ;
+            z *= squeezeXZ;
+          } else if (idleBreath !== 0) {
+            const upperFrac = (y - minY) / height;
+            y += idleBreath * upperFrac;
+          }
+
+          posArr[i] = x;
+          posArr[i + 1] = y;
+          posArr[i + 2] = z;
+        }
+
+        entry.posAttr.needsUpdate = true;
+      }
+
+      // Лёгкая вторичная динамика корпуса (переваливание при беге, отдача удара, пружина приземления)
+      if (isRag) {
         animPivot.position.set(0, 0, 0);
-        animPivot.rotation.set(Math.sin(t * 0.7) * 0.28, Math.cos(t * 0.5) * 0.22, Math.sin(t) * 0.34);
-        animPivot.scale.set(
-          sqX * (1 + Math.sin(t) * 0.06),
-          sqY * (1 - Math.sin(t) * 0.06),
-          sqZ * (1 + Math.cos(t) * 0.06)
-        );
-        return;
-      }
-
-      if (state === 'kick' || kickLunge > 0.05) {
-        // Резкий наклон вперёд и выпад пятаком (+Z) только при «Боднуть»
-        animPivot.position.set(0, kickLunge * 0.08, kickLunge * 0.42);
-        animPivot.rotation.set(0.24 * kickLunge, 0, 0);
-        animPivot.scale.set(
-          sqX * (1 - kickLunge * 0.08),
-          sqY * (1 - kickLunge * 0.06),
-          sqZ * (1 + kickLunge * 0.20)
-        );
-        return;
-      }
-
-      if (state === 'run' || state === 'walk') {
-        // Бодрое семенящее переваливание с боку на бок (roll по Z ±0.14 рад) + лёгкий частый bounce, без pitch
-        const isRun = state === 'run';
-        const freq = isRun ? 17.5 : 11.5;
-        const t = time * freq;
-        const bounce = Math.abs(Math.sin(t));
-        const roll = Math.sin(t) * (isRun ? 0.14 : 0.08);
-
-        animPivot.position.set(0, bounce * (isRun ? 0.12 : 0.055), 0);
+        animPivot.rotation.set(0, 0, Math.sin(time * 16) * 0.14);
+        animPivot.scale.set(sqX, sqY, sqZ);
+      } else {
+        const bounce = Math.abs(sinRun) * 0.10 * runBlend;
+        const roll = sinRun * 0.11 * runBlend;
+        animPivot.position.set(0, bounce, kickLunge * 0.14);
         animPivot.rotation.set(0, 0, roll);
-        const stretch = (bounce - 0.5) * (isRun ? 0.06 : 0.03);
-        animPivot.scale.set(sqX * (1 - stretch * 0.5), sqY * (1 + stretch), sqZ * (1 - stretch * 0.35));
-        return;
+        animPivot.scale.set(sqX, sqY, sqZ);
       }
-
-      if (state === 'sniff') {
-        const t = time * 12;
-        animPivot.position.set(0, Math.sin(time * 3.5) * 0.02, 0);
-        animPivot.rotation.set(0.14 + Math.sin(t) * 0.05, Math.cos(t * 0.6) * 0.08, Math.sin(time * 2.2) * 0.04);
-        animPivot.scale.set(sqX, sqY, sqZ * (1 + Math.sin(t) * 0.03));
-        return;
-      }
-
-      // Idle — живое дыхание и лёгкое покачивание
-      const breath = Math.sin(time * 2.6);
-      animPivot.position.set(0, Math.max(0, breath * 0.015), 0);
-      animPivot.rotation.set(0, 0, Math.sin(time * 1.3) * 0.025);
-      animPivot.scale.set(sqX * (1 + breath * 0.022), sqY * (1 - breath * 0.018), sqZ * (1 + breath * 0.02));
       return;
     }
 
@@ -1090,6 +1285,7 @@ export function createPigModel(type = PIG_TYPES.MEME, options = {}) {
     snoutTip,
     contactShadow,
     triggerLand,
+    triggerHeadbutt,
     update,
     updateShadow,
     disposeShadow,
