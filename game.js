@@ -490,8 +490,8 @@ sun.shadow.camera.left = -shD;
 sun.shadow.camera.right = shD;
 sun.shadow.camera.top = shD;
 sun.shadow.camera.bottom = -shD;
-sun.shadow.bias = -0.00035;
-sun.shadow.normalBias = 0.03;
+sun.shadow.bias = -0.0005;
+sun.shadow.normalBias = 0.05;
 sun.shadow.radius = 3.0;
 scene.add(sun);
 scene.add(sun.target);
@@ -1001,7 +1001,7 @@ let worldPBRCache = null;
 function getWorldPBRMaterials() {
   if (worldPBRCache) return worldPBRCache;
   worldPBRCache = {
-    // Кирпичные стены домов (Bricks085): светлые, чёткие, с polygonOffset против Z-fighting
+    // Кирпичные стены домов (Bricks085): DoubleSide, светлые и без Z-fighting
     bricks: loadPBRMaterial('Bricks085_1K-JPG', 2.2, 2.2, {
       fallbackMap: texPlaza,
       fallbackRoughness: 0.75,
@@ -1012,11 +1012,12 @@ function getWorldPBRMaterials() {
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
       color: 0xffffff,
+      side: THREE.DoubleSide,
       useNormal: true,
       useRoughness: true,
-      normalScale: 0.78,
+      normalScale: 0.72,
     }),
-    // Светлая штукатурка стен домов
+    // Светлая штукатурка стен домов (DoubleSide)
     plasterLight: loadPBRMaterial('Concrete042C_1K-JPG', 1.8, 1.8, {
       fallbackMap: texPlaza,
       fallbackRoughness: 0.75,
@@ -1027,11 +1028,12 @@ function getWorldPBRMaterials() {
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
       color: 0xffffff,
+      side: THREE.DoubleSide,
       useNormal: true,
       useRoughness: true,
       normalScale: 0.34,
     }),
-    // Бетонные стены домов (Concrete042C)
+    // Бетонные стены домов (Concrete042C, DoubleSide)
     concrete: loadPBRMaterial('Concrete042C_1K-JPG', 1.6, 1.6, {
       fallbackMap: texConcrete,
       fallbackRoughness: 0.75,
@@ -1042,11 +1044,12 @@ function getWorldPBRMaterials() {
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
       color: 0xffffff,
+      side: THREE.DoubleSide,
       useNormal: true,
       useRoughness: true,
-      normalScale: 0.65,
+      normalScale: 0.62,
     }),
-    // Водонапорная башня (Concrete042C)
+    // Водонапорная башня (Concrete042C, DoubleSide)
     concreteTower: loadPBRMaterial('Concrete042C_1K-JPG', 2, 3, {
       fallbackMap: texConcrete,
       fallbackRoughness: 0.75,
@@ -1057,11 +1060,12 @@ function getWorldPBRMaterials() {
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
       color: 0xffffff,
+      side: THREE.DoubleSide,
       useNormal: true,
       useRoughness: true,
-      normalScale: 0.65,
+      normalScale: 0.62,
     }),
-    // Черепица для крыш (RoofingTiles001)
+    // Черепица для крыш (RoofingTiles001, DoubleSide)
     roofTiles: loadPBRMaterial('RoofingTiles001_1K-JPG', 2.4, 2.4, {
       fallbackMap: texPlaza,
       fallbackRoughness: 0.82,
@@ -1069,11 +1073,13 @@ function getWorldPBRMaterials() {
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
+      color: 0xffffff,
+      side: THREE.DoubleSide,
       useNormal: true,
       useRoughness: true,
-      normalScale: 0.78,
+      normalScale: 0.72,
     }),
-    // Деревянные доски (Planks039) для мельницы и деревянных вставок на домах
+    // Деревянные доски (Planks039) для мельницы и деревянных вставок на домах (DoubleSide)
     planksWindmill: loadPBRMaterial('Planks039_1K-JPG', 2, 2, {
       fallbackMap: texCrate,
       fallbackRoughness: 0.85,
@@ -1081,9 +1087,11 @@ function getWorldPBRMaterials() {
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
+      color: 0xffffff,
+      side: THREE.DoubleSide,
       useNormal: true,
       useRoughness: true,
-      normalScale: 0.68,
+      normalScale: 0.65,
     }),
     planksFenceRail: loadPBRMaterial('Planks039_1K-JPG', 2.2, 0.45, {
       fallbackMap: texCrate,
@@ -1101,7 +1109,7 @@ function getWorldPBRMaterials() {
       useRoughness: true,
       normalScale: 0.62,
     }),
-    // Светло-голубое глянцевое стекло с подсветкой и polygonOffset
+    // Светло-голубое глянцевое стекло с подсветкой и отрицательным polygonOffset (всегда поверх стены)
     glassWindow: new THREE.MeshStandardMaterial({
       color: 0x7fd4ff,
       emissive: new THREE.Color(0x335577),
@@ -1109,9 +1117,10 @@ function getWorldPBRMaterials() {
       roughness: 0.1,
       metalness: 0.35,
       envMapIntensity: 1.4,
+      side: THREE.DoubleSide,
       polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     }),
     // Тёплое жилое стекло для оживления окон на домах
     warmGlassWindow: new THREE.MeshStandardMaterial({
@@ -1121,27 +1130,30 @@ function getWorldPBRMaterials() {
       roughness: 0.1,
       metalness: 0.25,
       envMapIntensity: 1.25,
+      side: THREE.DoubleSide,
       polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     }),
-    // Контрастные светлые оконные рамы и подоконники с polygonOffset
+    // Контрастные светлые оконные рамы и подоконники
     windowFrame: new THREE.MeshStandardMaterial({
       color: 0xf7f1e3,
       roughness: 0.55,
       metalness: 0.05,
       envMapIntensity: 1.2,
+      side: THREE.DoubleSide,
       polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     }),
     windowMullion: new THREE.MeshStandardMaterial({
       color: 0x3b302a,
       roughness: 0.65,
       metalness: 0.08,
+      side: THREE.DoubleSide,
       polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     }),
     metalContainer(tintHex = 0xffffff) {
       return loadPBRMaterial('Metal041B_1K-JPG', 2, 2, {
@@ -1160,10 +1172,131 @@ function getWorldPBRMaterials() {
   return worldPBRCache;
 }
 
+// Гарантирует, что материал стены здания двусторонний (DoubleSide) и никогда не имеет чёрного цвета (0x000000)
+function sanitizeBuildingMaterial(mat, allowDarkTrim = false) {
+  if (!mat) return mat;
+  mat.side = THREE.DoubleSide;
+  if (mat.color) {
+    const hex = mat.color.getHex();
+    const lum = 0.299 * mat.color.r + 0.587 * mat.color.g + 0.114 * mat.color.b;
+    if (hex === 0x000000 || (!allowDarkTrim && lum < 0.12)) {
+      mat.color.setHex(mat.map ? 0xffffff : 0xd8d0c4);
+    }
+  }
+  if ('vertexColors' in mat && mat.map && !allowDarkTrim) {
+    mat.vertexColors = false;
+  }
+  mat.needsUpdate = true;
+  return mat;
+}
+
+// Удаляет дублирующиеся и копланарные перекрывающиеся треугольники на стенах зданий (устраняет чёрное мерцание)
+// и чистит устаревший атрибут tangent перед пересчётом мировых UV для normalMap
+function deduplicateBuildingGeometry(mesh, rootInverseMatrix) {
+  if (!mesh || !mesh.geometry || !mesh.geometry.attributes || !mesh.geometry.attributes.position) return;
+  let geo = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+  geo.deleteAttribute('tangent');
+  if (!geo.attributes.normal) geo.computeVertexNormals();
+
+  const posAttr = geo.attributes.position;
+  const normAttr = geo.attributes.normal;
+  const uvAttr = geo.attributes.uv;
+  const colorAttr = geo.attributes.color;
+
+  const relMat = new THREE.Matrix4().multiplyMatrices(rootInverseMatrix, mesh.matrixWorld);
+  const triCount = Math.floor(posAttr.count / 3);
+  const keptTris = [];
+  const seenVertKeys = new Set();
+  const seenPlaneCells = new Set();
+
+  const p0 = new THREE.Vector3(), p1 = new THREE.Vector3(), p2 = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), faceN = new THREE.Vector3();
+  const q = (v) => Math.round(v * 250); // квант 4 мм
+
+  for (let t = 0; t < triCount; t++) {
+    const i0 = t * 3, i1 = i0 + 1, i2 = i0 + 2;
+    p0.fromBufferAttribute(posAttr, i0).applyMatrix4(relMat);
+    p1.fromBufferAttribute(posAttr, i1).applyMatrix4(relMat);
+    p2.fromBufferAttribute(posAttr, i2).applyMatrix4(relMat);
+
+    // Пропускаем вырожденные треугольники нулевой площади
+    e1.subVectors(p1, p0);
+    e2.subVectors(p2, p0);
+    faceN.crossVectors(e1, e2);
+    const area2Sq = faceN.lengthSq();
+    if (area2Sq < 1e-8) continue;
+    faceN.normalize();
+
+    // 1) Проверка на точный дубликат треугольника (включая обратный порядок обхода)
+    const k0 = `${q(p0.x)},${q(p0.y)},${q(p0.z)}`;
+    const k1 = `${q(p1.x)},${q(p1.y)},${q(p1.z)}`;
+    const k2 = `${q(p2.x)},${q(p2.y)},${q(p2.z)}`;
+    const triKey = [k0, k1, k2].sort().join('|');
+    if (seenVertKeys.has(triKey)) continue;
+    seenVertKeys.add(triKey);
+
+    // 2) Проверка на наложенные копланарные дубликаты стен (одинаковый центр и плоскость, даже с перевёрнутой нормалью)
+    const cx = Math.round(((p0.x + p1.x + p2.x) / 3) * 100);
+    const cy = Math.round(((p0.y + p1.y + p2.y) / 3) * 100);
+    const cz = Math.round(((p0.z + p1.z + p2.z) / 3) * 100);
+    const anx = Math.round(Math.abs(faceN.x) * 10);
+    const any = Math.round(Math.abs(faceN.y) * 10);
+    const anz = Math.round(Math.abs(faceN.z) * 10);
+    const cellKey = `${cx},${cy},${cz}|${anx},${any},${anz}`;
+    if (seenPlaneCells.has(cellKey)) continue;
+    seenPlaneCells.add(cellKey);
+
+    keptTris.push(t);
+  }
+
+  if (keptTris.length > 0 && keptTris.length < triCount) {
+    const outCount = keptTris.length * 3;
+    const newPos = new Float32Array(outCount * 3);
+    const newNorm = new Float32Array(outCount * 3);
+    const newUv = uvAttr ? new Float32Array(outCount * 2) : null;
+    const newCol = colorAttr ? new Float32Array(outCount * colorAttr.itemSize) : null;
+
+    for (let k = 0; k < keptTris.length; k++) {
+      const srcT = keptTris[k];
+      for (let c = 0; c < 3; c++) {
+        const sIdx = srcT * 3 + c;
+        const dIdx = k * 3 + c;
+        newPos[dIdx * 3]     = posAttr.getX(sIdx);
+        newPos[dIdx * 3 + 1] = posAttr.getY(sIdx);
+        newPos[dIdx * 3 + 2] = posAttr.getZ(sIdx);
+        newNorm[dIdx * 3]     = normAttr.getX(sIdx);
+        newNorm[dIdx * 3 + 1] = normAttr.getY(sIdx);
+        newNorm[dIdx * 3 + 2] = normAttr.getZ(sIdx);
+        if (newUv) {
+          newUv[dIdx * 2]     = uvAttr.getX(sIdx);
+          newUv[dIdx * 2 + 1] = uvAttr.getY(sIdx);
+        }
+        if (newCol) {
+          for (let ci = 0; ci < colorAttr.itemSize; ci++) {
+            newCol[dIdx * colorAttr.itemSize + ci] = colorAttr.array[sIdx * colorAttr.itemSize + ci];
+          }
+        }
+      }
+    }
+
+    const cleanGeo = new THREE.BufferGeometry();
+    cleanGeo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+    cleanGeo.setAttribute('normal', new THREE.BufferAttribute(newNorm, 3));
+    if (newUv) cleanGeo.setAttribute('uv', new THREE.BufferAttribute(newUv, 2));
+    if (newCol) cleanGeo.setAttribute('color', new THREE.BufferAttribute(newCol, colorAttr.itemSize));
+    cleanGeo.computeBoundingBox();
+    cleanGeo.computeBoundingSphere();
+    mesh.geometry = cleanGeo;
+  } else {
+    mesh.geometry = geo;
+  }
+}
+
 // Генерирует аккуратные мировые Box-Projection UV в метрах для моделей Kenney
 function applyWorldBoxUVs(mesh, rootInverseMatrix, uvUnitMeters = 4.0) {
   if (!mesh || !mesh.geometry || !mesh.geometry.attributes || !mesh.geometry.attributes.position) return;
   const geo = mesh.geometry.clone();
+  geo.deleteAttribute('tangent');
   mesh.geometry = geo;
   if (!geo.attributes.normal) geo.computeVertexNormals();
 
@@ -1244,11 +1377,13 @@ function sampleNativeTexturePixels(tex) {
 // 3: родной материал рам и дверей (с сохранением оригинальных UV!),
 // 4: деревянные вставки (Planks039)
 function splitMergedHouseMesh(mesh, rootInverseMatrix, buildingHeight, wallMat, roofMat, glassMat, nativeMat, woodMat, hasWoodInserts) {
+  deduplicateBuildingGeometry(mesh, rootInverseMatrix);
   let geo = mesh.geometry;
   if (geo.index) {
     geo = geo.toNonIndexed();
     mesh.geometry = geo;
   }
+  geo.deleteAttribute('tangent');
   if (!geo.attributes.normal) geo.computeVertexNormals();
 
   const posAttr = geo.attributes.position;
@@ -1398,11 +1533,20 @@ function splitMergedHouseMesh(mesh, rootInverseMatrix, buildingHeight, wallMat, 
   geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(newNorm, 3));
   geo.setAttribute('uv', new THREE.BufferAttribute(newUv, 2));
+  geo.deleteAttribute('tangent');
+  geo.deleteAttribute('color');
   geo.attributes.position.needsUpdate = true;
   geo.attributes.normal.needsUpdate = true;
   geo.attributes.uv.needsUpdate = true;
 
-  mesh.material = [wallMat, roofMat, glassMat, nativeMat || wallMat, woodMat];
+  const safeNative = nativeMat ? sanitizeBuildingMaterial(nativeMat.clone(), true) : wallMat;
+  mesh.material = [
+    sanitizeBuildingMaterial(wallMat, false),
+    sanitizeBuildingMaterial(roofMat, false),
+    sanitizeBuildingMaterial(glassMat, false),
+    safeNative,
+    sanitizeBuildingMaterial(woodMat, false),
+  ];
 }
 
 // Заменяет мультяшные материалы на реалистичные PBR-текстуры, сохраняя окна, рамы и двери
@@ -1609,6 +1753,21 @@ function addContrastingWindowsToHouse(innerRoot, finalSize, houseSeed = 0) {
   }
 
   innerRoot.add(winGroup);
+
+  // Вешаем реалистичные роллеты (rollershutter_window_03_1k.gltf) на фасад каждого второго дома (с выносом от стены)
+  if ((houseSeed % 2) === 0) {
+    const shutterY = Math.min(h * 0.34, Math.max(1.55, h * 0.27));
+    const zShutter = probeFlatWall(new THREE.Vector3(wallCx, shutterY, wallMaxZ + 2.5), dFront, nFront, 0.95, 0.70, 'x');
+    if (zShutter !== null) {
+      loadNormalizedGltfTemplate('rollershutter_window_03_1k.gltf', 2.35, 'maxHoriz', false).then((tpl) => {
+        if (!tpl) return;
+        const sh = tpl.template.clone(true);
+        const halfD = Math.max(0.05, tpl.size.z * 0.5);
+        sh.position.set(wallCx, shutterY, zShutter + halfD + 0.02);
+        winGroup.add(sh);
+      });
+    }
+  }
 }
 
 function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) {
@@ -1713,6 +1872,7 @@ function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) 
   };
 
   for (const m of meshes) {
+    deduplicateBuildingGeometry(m, invRoot);
     const relMat = new THREE.Matrix4().multiplyMatrices(invRoot, m.matrixWorld);
     const normMat = new THREE.Matrix3().getNormalMatrix(relMat);
     const posAttr = m.geometry.attributes.position;
@@ -1742,15 +1902,18 @@ function applyPBRToKenneyModel(innerRoot, finalSize, style, tintHex = 0xffffff) 
       continue;
     }
     if (singleMeta === 'native') {
-      if (singleMat && singleMat.map) setSRGBTex(singleMat.map);
+      if (singleMat) {
+        if (singleMat.map) setSRGBTex(singleMat.map);
+        m.material = sanitizeBuildingMaterial(singleMat.clone(), true);
+      }
       continue;
     }
 
     applyWorldBoxUVs(m, invRoot, 4.0);
     if (Array.isArray(m.material)) {
-      m.material = m.material.map((oldMat) => pickHouseMaterial(oldMat, m.name, mBox, avgNy));
+      m.material = m.material.map((oldMat) => sanitizeBuildingMaterial(pickHouseMaterial(oldMat, m.name, mBox, avgNy), false));
     } else {
-      m.material = pickHouseMaterial(m.material, m.name, mBox, avgNy);
+      m.material = sanitizeBuildingMaterial(pickHouseMaterial(m.material, m.name, mBox, avgNy), false);
     }
   }
 
@@ -3438,19 +3601,394 @@ function updateGoldenAcorns(dt) {
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// КЭШИРУЮЩИЙ ЗАГРУЗЧИК 14 НОВЫХ 3D-МОДЕЛЕЙ ПРОПСОВ (./models/*.gltf + ./models/textures/)
+// ----------------------------------------------------------------------------
+const gltfPropTemplateCache = new Map(); // cacheKey -> Promise<{ template, size } | null>
+
+function loadNormalizedGltfTemplate(filename, targetSize = 1.0, scaleMode = 'height', groundAligned = true, autoHorizontalCar = false) {
+  const cacheKey = `${filename}|${targetSize}|${scaleMode}|${groundAligned}|${autoHorizontalCar}`;
+  if (!gltfPropTemplateCache.has(cacheKey)) {
+    const promise = new Promise((resolve) => {
+      envGltfLoader.load(
+        `${MODEL_DIR}${filename}`,
+        (gltf) => {
+          const raw = gltf.scene || (gltf.scenes && gltf.scenes[0]);
+          if (!raw) {
+            resolve(null);
+            return;
+          }
+
+          const wrapper = new THREE.Group();
+          const orient = new THREE.Group();
+          orient.add(raw);
+          wrapper.add(orient);
+          wrapper.updateMatrixWorld(true);
+
+          const rawBox = new THREE.Box3().setFromObject(orient);
+          if (rawBox.isEmpty()) {
+            resolve(null);
+            return;
+          }
+          const rawSize = new THREE.Vector3();
+          rawBox.getSize(rawSize);
+
+          if (autoHorizontalCar) {
+            if (rawSize.y > Math.max(rawSize.x, rawSize.z) * 1.05) {
+              orient.rotation.x = -Math.PI / 2;
+              orient.updateMatrixWorld(true);
+            }
+            const hBox = new THREE.Box3().setFromObject(orient);
+            const hSize = new THREE.Vector3();
+            hBox.getSize(hSize);
+            if (hSize.x > hSize.z * 1.12) {
+              orient.rotation.y += Math.PI / 2;
+              orient.updateMatrixWorld(true);
+            }
+          }
+
+          const orientedBox = new THREE.Box3().setFromObject(orient);
+          const orientedSize = new THREE.Vector3();
+          orientedBox.getSize(orientedSize);
+
+          const denom = scaleMode === 'maxHoriz'
+            ? Math.max(0.01, orientedSize.x, orientedSize.z)
+            : Math.max(0.01, orientedSize.y);
+          const s = targetSize / denom;
+          orient.scale.multiplyScalar(s);
+
+          wrapper.updateMatrixWorld(true);
+          const scaledBox = new THREE.Box3().setFromObject(wrapper);
+          const center = new THREE.Vector3();
+          const finalSize = new THREE.Vector3();
+          scaledBox.getCenter(center);
+          scaledBox.getSize(finalSize);
+
+          orient.position.x -= center.x;
+          orient.position.z -= center.z;
+          orient.position.y -= groundAligned ? scaledBox.min.y : center.y;
+
+          const isBush = /bush/i.test(filename);
+          wrapper.traverse((obj) => {
+            if (!obj.isMesh) return;
+            obj.castShadow = isBush ? !isMobile : true;
+            obj.receiveShadow = !isBush;
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            for (const m of mats) {
+              if (!m) continue;
+              if (m.map) setSRGBTex(m.map);
+              if (isBush) {
+                m.side = THREE.DoubleSide;
+                if (m.transparent || m.alphaMap) {
+                  m.alphaTest = 0.35;
+                  m.transparent = false;
+                  m.depthWrite = true;
+                }
+              }
+              if ('envMapIntensity' in m) m.envMapIntensity = 1.15;
+              m.needsUpdate = true;
+            }
+          });
+
+          resolve({ template: wrapper, size: finalSize });
+        },
+        undefined,
+        (err) => {
+          console.warn(`Не удалось загрузить 3D-пропс ${MODEL_DIR}${filename}:`, err);
+          checkLocalGlbProtocolHint();
+          resolve(null);
+        }
+      );
+    });
+    gltfPropTemplateCache.set(cacheKey, promise);
+  }
+  return gltfPropTemplateCache.get(cacheKey);
+}
+
+// Расставляет тяжёлые/статичные объекты на обочинах и полянах (валуны, кусты, машины под тентом, складские роллеты)
+function spawnStaticWorldModels() {
+  // 1. Тяжёлые валуны (namaqualand_boulder_05_1k.gltf) на обочинах дорог, у озера и на лесных полянах
+  const BOULDER_SPOTS = [
+    { x: -16.5, z:  28.0, size: 3.1, yaw: 0.4 },
+    { x:  19.0, z:  34.0, size: 2.8, yaw: 1.9 },
+    { x: -34.0, z: -26.0, size: 3.6, yaw: 2.7 },
+    { x:  38.0, z: -38.0, size: 3.3, yaw: 0.9 },
+    { x: -12.0, z: -78.0, size: 3.2, yaw: 1.3 },
+    { x:  14.0, z: -96.0, size: 3.9, yaw: 3.8 },
+    { x: -24.0, z:-122.0, size: 3.4, yaw: 5.1 },
+    { x:  62.0, z:  14.0, size: 3.5, yaw: 2.2 },
+    { x:  98.0, z: -16.0, size: 4.1, yaw: 0.6 },
+    { x: -62.0, z:  16.0, size: 3.7, yaw: 4.4 },
+    { x: -96.0, z: -18.0, size: 4.3, yaw: 1.7 },
+    { x: -34.0, z: 148.0, size: 3.8, yaw: 2.5 },
+    { x:  36.0, z: 150.0, size: 3.4, yaw: 0.2 },
+    { x:  18.0, z:  88.0, size: 3.0, yaw: 3.1 },
+  ];
+  for (const b of BOULDER_SPOTS) noTreeZones.push({ x: b.x, z: b.z, r: b.size * 0.95 });
+
+  loadNormalizedGltfTemplate('namaqualand_boulder_05_1k.gltf', 1.0, 'maxHoriz', true).then((tpl) => {
+    if (!tpl) return;
+    const grp = new THREE.Group();
+    grp.name = 'static_boulders';
+    for (const sp of BOULDER_SPOTS) {
+      const clone = tpl.template.clone(true);
+      clone.position.set(sp.x, -0.08, sp.z);
+      clone.rotation.y = sp.yaw;
+      clone.scale.setScalar(sp.size);
+      grp.add(clone);
+
+      const hx = Math.max(0.5, (tpl.size.x * sp.size) * 0.44);
+      const hy = Math.max(0.45, (tpl.size.y * sp.size) * 0.46);
+      const hz = Math.max(0.5, (tpl.size.z * sp.size) * 0.44);
+      const body = new CANNON.Body({
+        mass: 0,
+        material: matWorld,
+        position: new CANNON.Vec3(sp.x, hy - 0.05, sp.z),
+      });
+      body.quaternion.setFromEuler(0, sp.yaw, 0);
+      body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
+      world.addBody(body);
+    }
+    scene.add(grp);
+  });
+
+  // 2. Кусты (wild_rooibos_bush_1k.gltf) на обочинах, полянах и у заборов через clone()
+  const BUSH_SPOTS = [
+    [-19, -8, 1.35], [19, -11, 1.45], [-19, 17, 1.30], [18, 19, 1.50],
+    [-33, 14, 1.60], [34, -15, 1.55], [-11, -30, 1.35], [11, -44, 1.45],
+    [-10, -56, 1.50], [10, -74, 1.40], [-11, -108, 1.55], [24, -134, 1.65],
+    [-10, 32, 1.40], [11, 48, 1.50], [-11, 68, 1.45], [12, 92, 1.60],
+    [-22, 118, 1.50], [22, 118, 1.45], [28, -11, 1.35], [52, 11, 1.55],
+    [82, -11, 1.50], [108, 12, 1.45], [-28, 11, 1.40], [-54, -11, 1.60],
+    [-86, 12, 1.70], [-108, -14, 1.55], [-128, 28, 1.65], [38, 134, 1.50],
+  ];
+  loadNormalizedGltfTemplate('wild_rooibos_bush_1k.gltf', 1.0, 'height', true).then((tpl) => {
+    if (!tpl) return;
+    const grp = new THREE.Group();
+    grp.name = 'static_rooibos_bushes';
+    BUSH_SPOTS.forEach(([bx, bz, bh], idx) => {
+      const clone = tpl.template.clone(true);
+      clone.position.set(bx, -0.02, bz);
+      clone.rotation.y = (idx * 1.618) % (Math.PI * 2);
+      const wScale = bh * (0.92 + (idx % 3) * 0.08);
+      clone.scale.set(wScale, bh, wScale);
+      grp.add(clone);
+    });
+    scene.add(grp);
+  });
+
+  // 3. Тяжёлые статичные машины под тентом (covered_car_1k.gltf) на обочинах и полянах у домов
+  const COVERED_CAR_SPOTS = [
+    { x:  34.5, z: -15.5, yaw:  0.20 }, // Центральная деревня — у дома на северо-востоке
+    { x: -35.5, z:  16.5, yaw: -0.45 }, // Центральная деревня — у дома на юго-западе
+    { x: -24.0, z:-144.0, yaw:  0.30 }, // Большая ферма — рядом с амбаром
+    { x: 154.0, z: -26.0, yaw: -1.45 }, // Стройплощадка — на обочине у бытовки
+    { x: -24.0, z: 118.0, yaw:  0.65 }, // Пляж — у домика на берегу
+    { x:-152.0, z: -24.0, yaw:  1.10 }, // Западный лес — на опушке у домика
+  ];
+  for (const c of COVERED_CAR_SPOTS) noTreeZones.push({ x: c.x, z: c.z, r: 5.5 });
+
+  loadNormalizedGltfTemplate('covered_car_1k.gltf', 4.8, 'maxHoriz', true, true).then((tpl) => {
+    if (!tpl) return;
+    const grp = new THREE.Group();
+    grp.name = 'static_covered_cars';
+    for (const sp of COVERED_CAR_SPOTS) {
+      const clone = tpl.template.clone(true);
+      clone.position.set(sp.x, 0, sp.z);
+      clone.rotation.y = sp.yaw;
+      grp.add(clone);
+
+      const hx = Math.max(0.75, tpl.size.x * 0.48);
+      const hy = Math.max(0.65, tpl.size.y * 0.50);
+      const hz = Math.max(1.20, tpl.size.z * 0.48);
+      const body = new CANNON.Body({
+        mass: 0,
+        material: matWorld,
+        position: new CANNON.Vec3(sp.x, hy, sp.z),
+      });
+      body.quaternion.setFromEuler(0, sp.yaw, 0);
+      body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
+      world.addBody(body);
+    }
+    scene.add(grp);
+  });
+
+  // 4. Отдельные роллеты на стойке у стройплощадки (rollershutter_window_03_1k.gltf)
+  loadNormalizedGltfTemplate('rollershutter_window_03_1k.gltf', 2.4, 'maxHoriz', true).then((tpl) => {
+    if (!tpl) return;
+    const spots = [
+      { x: 158.0, z: -18.5, yaw: -1.57 },
+      { x: -10.5, z:-145.5, yaw:  0.22 },
+    ];
+    for (const sp of spots) {
+      const clone = tpl.template.clone(true);
+      clone.position.set(sp.x, 0, sp.z);
+      clone.rotation.y = sp.yaw;
+      scene.add(clone);
+    }
+  });
+}
+
 // 4. ФИЗИЧЕСКИЕ ЯЩИКИ, ВЗРЫВНЫЕ БОЧКИ И ТЮКИ СЕНА (С ОПТИМИЗАЦИЕЙ СНА > 75м)
 // ----------------------------------------------------------------------------
 const dynamicProps = [];
+let propSpawnEpoch = 0;
+
+// Конфигурация динамических 3D-пропсов из ./models/*.gltf (обычные + взрывоопасные)
+const GLTF_DYNAMIC_PROP_SPECS = {
+  explosive_barrel: {
+    file: 'Barrel_01_1k.gltf',
+    targetSize: 1.22,
+    scaleMode: 'height',
+    mass: 13,
+    name: 'Взрывная бочка',
+    points: 300,
+    explosive: true,
+    burstColor: 0xff5a1f,
+  },
+  propane_tank: {
+    file: 'propane_tank_1k.gltf',
+    targetSize: 1.08,
+    scaleMode: 'height',
+    mass: 11,
+    name: 'Газовый баллон',
+    points: 350,
+    explosive: true,
+    burstColor: 0xff7a29,
+  },
+  barrel_normal: {
+    file: 'Barrel_03_1k.gltf',
+    targetSize: 1.18,
+    scaleMode: 'height',
+    mass: 14,
+    name: 'Бочка',
+    points: 140,
+    explosive: false,
+    burstColor: 0x9aa4b0,
+  },
+  cardboard_box: {
+    file: 'cardboard_box_01_1k.gltf',
+    targetSize: 0.78,
+    scaleMode: 'height',
+    mass: 5,
+    name: 'Коробка',
+    points: 110,
+    explosive: false,
+    burstColor: 0xd4a46a,
+  },
+  trashbag: {
+    file: 'trashbag_1k.gltf',
+    targetSize: 0.78,
+    scaleMode: 'height',
+    mass: 4.5,
+    name: 'Мусорный мешок',
+    points: 100,
+    explosive: false,
+    burstColor: 0x454a52,
+  },
+  cement_bag: {
+    file: 'cement_bag_1k.gltf',
+    targetSize: 0.92,
+    scaleMode: 'maxHoriz',
+    mass: 12,
+    name: 'Мешок цемента',
+    points: 130,
+    explosive: false,
+    burstColor: 0xc8c4b8,
+  },
+  trash_can: {
+    file: 'metal_trash_can_1k.gltf',
+    targetSize: 0.96,
+    scaleMode: 'height',
+    mass: 8,
+    name: 'Металлическая урна',
+    points: 135,
+    explosive: false,
+    burstColor: 0xaeb5bd,
+  },
+  old_tyre: {
+    file: 'old_tyre_1k.gltf',
+    targetSize: 0.86,
+    scaleMode: 'maxHoriz',
+    mass: 9,
+    name: 'Покрышка',
+    points: 125,
+    explosive: false,
+    burstColor: 0x2c2e33,
+  },
+  wheel_rim: {
+    file: 'rusted_wheel_rim_02_1k.gltf',
+    targetSize: 0.64,
+    scaleMode: 'maxHoriz',
+    mass: 10,
+    name: 'Колёсный диск',
+    points: 145,
+    explosive: false,
+    burstColor: 0x9e6340,
+  },
+  metal_rack: {
+    file: 'worn_metal_rack_1k.gltf',
+    targetSize: 1.92,
+    scaleMode: 'height',
+    mass: 18,
+    name: 'Металлический стеллаж',
+    points: 175,
+    explosive: false,
+    burstColor: 0x8d959e,
+  },
+};
 
 function clearAndSpawnProps() {
-  if (grabbedObj && grabbedObj.kind !== 'npc') releaseGrabbed(false);
+  propSpawnEpoch++;
+  const myEpoch = propSpawnEpoch;
+  if (grabbedObj && grabbedObj.kind !== 'npc' && grabbedObj.kind !== 'vehicle') releaseGrabbed(false);
   for (const p of dynamicProps) { scene.remove(p.mesh); world.removeBody(p.body); }
   dynamicProps.length = 0;
 
   const crateMat  = new THREE.MeshStandardMaterial({ map: texCrate, roughness: 0.78 });
-  const barrelMat = new THREE.MeshStandardMaterial({ map: texBarrel, roughness: 0.48, metalness: 0.22 });
-  const barrelCap = stdMat(0x8c1912, 0.5, 0.25);
   const hayMat    = stdMat(0xe5bd53, 0.92);
+
+  function bindPropCollisions(propObj) {
+    const body = propObj.body;
+    body.userData = { propObj };
+    body.addEventListener('collide', (e) => {
+      const other = e.body;
+      const impact = Math.abs(e.contact.getImpactVelocityAlongNormal());
+      if (other === playerBody && !inTractor) {
+        markByPlayer(body, 3.2);
+        const pSpd = playerBody.velocity.length();
+        // Пинаем мелкие предметы при разбеге с начислением очков!
+        if (pSpd > 1.8 && !propObj.explosive && propObj.hitCooldown <= 0) {
+          propObj.hitCooldown = 0.85;
+          const dir = body.position.vsub(playerBody.position);
+          dir.y = 0;
+          if (dir.lengthSquared() > 0.001) dir.normalize();
+          body.wakeUp();
+          const kickPower = Math.min(130, pSpd * (isRagdoll ? 14 : 11));
+          body.applyImpulse(new CANNON.Vec3(dir.x * kickPower, 28 + pSpd * 3.5, dir.z * kickPower));
+          sfx.crate();
+          spawnBurst(body.position, propObj.burstColor || 0xd49b50, 5, 5, 0.85);
+          addTrick(`Пнул: ${propObj.name}!`, propObj.points || 120, body.position, '#ffd970');
+        }
+        // Сильный набег/рэгдолл в взрывоопасную бочку или газовый баллон -> взрыв!
+        if (propObj.explosive && !propObj.exploded && (impact > 8.5 || (isRagdoll && pSpd > 5.2))) {
+          explodeBarrel(propObj);
+        }
+      } else if (other === tractor.body && inTractor) {
+        markByPlayer(body, 3.5);
+        if (propObj.explosive && !propObj.exploded && impact > 5.0) {
+          explodeBarrel(propObj);
+        }
+      } else if (isBodyByPlayer(other) && impact > 2.2) {
+        markByPlayer(body, 3.0);
+        if (propObj.explosive && !propObj.exploded && impact > 9.0) {
+          explodeBarrel(propObj);
+        }
+      } else if (propObj.explosive && !propObj.exploded && impact > 11.5) {
+        explodeBarrel(propObj);
+      }
+    });
+  }
 
   function spawnProp(kind, x, y, z) {
     let mesh, body;
@@ -3459,10 +3997,6 @@ function clearAndSpawnProps() {
       mesh = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), crateMat);
       body = new CANNON.Body({ mass: 10, material: matProp, linearDamping: 0.1, angularDamping: 0.15 });
       body.addShape(new CANNON.Box(new CANNON.Vec3(s / 2, s / 2, s / 2)));
-    } else if (kind === 'barrel') {
-      mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 1.44, 14), [barrelMat, barrelCap, barrelCap]);
-      body = new CANNON.Body({ mass: 13, material: matProp, linearDamping: 0.08, angularDamping: 0.14 });
-      body.addShape(new CANNON.Box(new CANNON.Vec3(0.50, 0.72, 0.50)));
     } else {
       mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.68, 0.68, 1.35, 12), hayMat);
       mesh.rotation.z = Math.PI / 2;
@@ -3478,57 +4012,78 @@ function clearAndSpawnProps() {
 
     const propObj = {
       kind,
-      name: kind === 'barrel' ? 'Бочка' : (kind === 'crate' ? 'Ящик' : 'Тюк сена'),
+      name: kind === 'crate' ? 'Ящик' : 'Тюк сена',
+      points: 120,
+      explosive: false,
+      burstColor: 0xd49b50,
       mesh,
       body,
       hitCooldown: 0,
       exploded: false,
     };
-    body.userData = { propObj };
-
-    body.addEventListener('collide', (e) => {
-      const other = e.body;
-      const impact = Math.abs(e.contact.getImpactVelocityAlongNormal());
-      if (other === playerBody || (other === tractor.body && inTractor)) {
-        markByPlayer(body, 3.0);
-      } else if (isBodyByPlayer(other) && impact > 2.2) {
-        markByPlayer(body, 3.0);
-      }
-      if (kind === 'barrel' && impact > 11.5 && !propObj.exploded) {
-        explodeBarrel(propObj);
-      }
-    });
-
+    bindPropCollisions(propObj);
     scene.add(mesh);
     world.addBody(body);
     dynamicProps.push(propObj);
   }
 
-  // Центр: пирамиды ящиков
-  for (let row = 0; row < 4; row++) {
-    for (let col = 0; col < 4 - row; col++) {
+  // Спавн клонированного динамического .gltf предмета с точным коллайдером по его Box3
+  function spawnGltfDynamicProp(typeKey, x, z, yaw = 0, yExtra = 0) {
+    const spec = GLTF_DYNAMIC_PROP_SPECS[typeKey];
+    if (!spec) return;
+    loadNormalizedGltfTemplate(spec.file, spec.targetSize, spec.scaleMode, false).then((tpl) => {
+      if (!tpl || myEpoch !== propSpawnEpoch) return;
+
+      const mesh = tpl.template.clone(true);
+      const hx = Math.max(0.18, tpl.size.x * 0.5);
+      const hy = Math.max(0.16, tpl.size.y * 0.5);
+      const hz = Math.max(0.18, tpl.size.z * 0.5);
+
+      const body = new CANNON.Body({
+        mass: spec.mass,
+        material: matProp,
+        linearDamping: 0.12,
+        angularDamping: 0.16,
+        position: new CANNON.Vec3(x, hy + 0.04 + yExtra, z),
+      });
+      body.quaternion.setFromEuler(0, yaw, 0);
+      body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
+      body.sleepSpeedLimit = 0.24;
+      body.sleepTimeLimit = 1.0;
+
+      mesh.position.copy(body.position);
+      mesh.quaternion.copy(body.quaternion);
+
+      const propObj = {
+        kind: spec.explosive ? 'barrel' : typeKey,
+        propType: typeKey,
+        name: spec.name,
+        points: spec.points,
+        explosive: spec.explosive,
+        burstColor: spec.burstColor,
+        mesh,
+        body,
+        hitCooldown: 0,
+        exploded: false,
+      };
+      bindPropCollisions(propObj);
+      scene.add(mesh);
+      world.addBody(body);
+      dynamicProps.push(propObj);
+    });
+  }
+
+  // Центр: пирамиды деревянных ящиков
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3 - row; col++) {
       spawnProp('crate', 7.5, 0.65 + row * 1.26, -19.8 + col * 1.28 + row * 0.64);
     }
   }
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3 - row; col++) {
-      spawnProp('crate', 4.0 + col * 1.30 + row * 0.65, 0.65 + row * 1.26, 9.5);
-    }
-  }
-
-  // Стройка (Восток): гигантская стена ящиков за мега-трамплином + груды взрывных бочек
-  for (let row = 0; row < 4; row++) {
-    for (let col = 0; col < 4 - row; col++) {
       spawnProp('crate', 155.0, 0.65 + row * 1.26, 11.8 + col * 1.28 + row * 0.64);
     }
   }
-  const barrels = [
-    [-8.5, 0.74, 6.2], [-7.2, 0.74, 6.2], [-7.85, 2.22, 6.2],
-    [132, 0.74, -6], [133.3, 0.74, -6], [132.65, 2.22, -6],
-    [152.5, 0.74, 13.0], [152.5, 0.74, 14.5], [152.5, 2.22, 13.75],
-    [142, 0.74, 22], [143.3, 0.74, 22],
-  ];
-  for (const [bx, by, bz] of barrels) spawnProp('barrel', bx, by, bz);
 
   // Ферма (Север): тюки сена у амбара
   const hays = [
@@ -3536,6 +4091,104 @@ function clearAndSpawnProps() {
     [6, 0.7, -144], [7.6, 0.7, -144],
   ];
   for (const [hx, hy, hz] of hays) spawnProp('hay', hx, hy, hz);
+
+  // ВЗРЫВООПАСНЫЕ БОЧКИ (Barrel_01_1k.gltf) И ГАЗОВЫЕ БАЛЛОНЫ (propane_tank_1k.gltf)
+  const explosiveSpawns = [
+    // Прямо у центральной площади (легко проверить сразу после старта!)
+    ['explosive_barrel', -8.4,  6.2, 0.2],
+    ['explosive_barrel', -7.2,  6.2, 1.1],
+    ['propane_tank',     -7.8,  7.4, 0.5],
+    ['propane_tank',      5.4,  7.6, 1.8],
+    ['explosive_barrel',  6.6,  7.6, 0.4],
+    ['propane_tank',     16.5, -18.5, 2.1],
+    ['explosive_barrel', -21.5, 19.0, 0.9],
+    // Большая ферма (Север)
+    ['propane_tank',     -8.5,-144.0, 0.6],
+    ['explosive_barrel', -9.8,-144.0, 1.5],
+    ['propane_tank',      9.5,-148.0, 2.4],
+    // Стройплощадка (Восток)
+    ['explosive_barrel', 132.0, -6.0, 0.3],
+    ['explosive_barrel', 133.4, -6.0, 1.2],
+    ['propane_tank',     132.7, -4.7, 2.0],
+    ['explosive_barrel', 152.2, 13.4, 0.8],
+    ['propane_tank',     152.2, 14.8, 1.9],
+    ['propane_tank',     142.0, 22.0, 0.4],
+    // Пляж (Юг) и Скейт-парк (Запад)
+    ['propane_tank',     -22.0, 121.0, 1.2],
+    ['explosive_barrel',-128.0,  14.5, 0.7],
+  ];
+  for (const [typeKey, x, z, yaw] of explosiveSpawns) {
+    spawnGltfDynamicProp(typeKey, x, z, yaw);
+  }
+
+  // МЕЛКИЕ ДИНАМИЧЕСКИЕ ПРЕДМЕТЫ У ДОМОВ (коробки, мешки, цемент, урны, покрышки, диски, стеллажи, Barrel_03)
+  const housePropSpawns = [
+    // Центральная площадь и ближайшие дома (сразу перед глазами игрока)
+    ['cardboard_box',  4.6,  11.0, 0.3],
+    ['cardboard_box',  5.5,  11.6, 1.1],
+    ['trash_can',     -6.2,  11.8, 0.0],
+    ['trashbag',      -5.3,  12.1, 0.7],
+    ['old_tyre',       8.2,   2.2, 0.5],
+    ['wheel_rim',      9.2,   2.6, 1.4],
+    ['barrel_normal', -14.2, -9.2, 0.2],
+    ['cement_bag',    -13.2, -8.5, 0.9],
+    ['metal_rack',     19.5, -18.5, -0.35],
+    ['cardboard_box',  18.8, -17.2, 0.6],
+    ['trash_can',      21.2, -16.5, 0.2],
+    ['trashbag',       22.0, -16.2, 1.5],
+    ['barrel_normal', -22.0,  17.5, 0.4],
+    ['old_tyre',      -20.8,  18.0, 1.2],
+    ['wheel_rim',     -19.9,  17.6, 0.3],
+    ['metal_rack',     22.0,  19.0, 2.7],
+    ['cement_bag',     20.8,  19.6, 0.5],
+    ['cardboard_box',  20.0,  18.8, 1.3],
+    ['trash_can',     -39.0, -10.0, 1.5],
+    ['trashbag',      -38.4,  -9.3, 2.2],
+    ['barrel_normal',  39.0,  12.0, 0.8],
+    ['old_tyre',       38.2,  13.2, 0.4],
+    ['wheel_rim',      38.5, -19.5, 1.1],
+    ['cement_bag',     37.6, -20.2, 0.2],
+
+    // Большая ферма (Север)
+    ['barrel_normal', -12.0,-141.0, 0.4],
+    ['cement_bag',    -10.8,-140.5, 1.1],
+    ['old_tyre',      -26.0,-134.0, 0.8],
+    ['wheel_rim',     -24.8,-133.5, 2.1],
+    ['metal_rack',    -25.5,-142.0, 0.6],
+    ['cardboard_box', -24.2,-141.5, 0.2],
+    ['trash_can',      11.0,-142.0, 0.0],
+    ['trashbag',       11.9,-141.8, 1.7],
+
+    // Стройплощадка (Восток)
+    ['cement_bag',    139.0, -19.5, 0.3],
+    ['cement_bag',    140.2, -19.2, 1.2],
+    ['metal_rack',    156.5, -22.0, -1.5],
+    ['barrel_normal', 155.0, -20.5, 0.6],
+    ['old_tyre',      129.0,  -4.0, 0.9],
+    ['wheel_rim',     130.0,  -3.6, 1.8],
+    ['cardboard_box', 156.0, -24.5, 0.5],
+    ['trash_can',     157.0, -26.0, 0.0],
+
+    // Озеро и пляж (Юг)
+    ['trash_can',     -23.0, 123.0, 0.6],
+    ['trashbag',      -22.2, 123.6, 1.4],
+    ['cardboard_box',  23.5, 124.0, 0.8],
+    ['barrel_normal',  24.5, 125.0, 0.2],
+    ['old_tyre',      -18.0, 129.0, 1.0],
+
+    // Лес и скейт-парк (Запад)
+    ['metal_rack',   -155.0, -22.0, 1.2],
+    ['barrel_normal',-154.0,  22.0, 0.5],
+    ['old_tyre',     -114.0, -26.0, 0.9],
+    ['wheel_rim',    -113.0, -25.4, 2.0],
+    ['trash_can',    -115.0, -27.5, 0.3],
+    ['trashbag',     -114.2, -28.0, 1.1],
+    ['cardboard_box',-153.5,  23.5, 0.7],
+    ['cement_bag',   -153.0, -20.5, 1.6],
+  ];
+  for (const [typeKey, x, z, yaw] of housePropSpawns) {
+    spawnGltfDynamicProp(typeKey, x, z, yaw);
+  }
 }
 
 function explodeBarrel(barrelProp) {
@@ -3545,36 +4198,46 @@ function explodeBarrel(barrelProp) {
   if (grabbedObj === barrelProp) releaseGrabbed(false);
 
   const pos = barrelProp.body.position.clone();
+  const isPropane = barrelProp.propType === 'propane_tank';
   sfx.boom();
   spawnExplosionFlash(pos);
-  spawnBurst(pos, 0xff5414, 16, 15, 1.3);
-  spawnBurst(pos, 0xffe44a, 10, 11, 1.0);
-  spawnBurst(pos, 0x3b3634, 8, 7, 1.4);
-  if (causedByPlayer) addTrick('Бочка-бабах!', 250, pos, '#ff6e3a');
+  spawnBurst(pos, 0xff5414, 22, 17, 1.45);
+  spawnBurst(pos, 0xffe44a, 14, 13, 1.15);
+  spawnBurst(pos, 0xff2600, 10, 15, 1.10);
+  spawnBurst(pos, 0x3b3634, 10, 8, 1.50);
+
+  if (causedByPlayer) {
+    addTrick(
+      isPropane ? 'Газовый взрыв!' : 'Взрывная бочка!',
+      isPropane ? 350 : 300,
+      pos,
+      '#ff6e3a'
+    );
+  }
 
   barrelProp.body.wakeUp();
-  barrelProp.body.applyImpulse(new CANNON.Vec3((Math.random() - 0.5) * 90, 210, (Math.random() - 0.5) * 90));
-  barrelProp.body.angularVelocity.set(14, 10, -12);
+  barrelProp.body.applyImpulse(new CANNON.Vec3((Math.random() - 0.5) * 110, 260, (Math.random() - 0.5) * 110));
+  barrelProp.body.angularVelocity.set(16, 12, -14);
 
-  const radius = 9.5;
+  const radius = 11.5;
   for (const p of dynamicProps) {
     if (p === barrelProp) continue;
     const dist = p.body.position.distanceTo(pos);
     if (dist < radius && dist > 0.05) {
       const dir = p.body.position.vsub(pos);
       dir.normalize();
-      const power = (1 - dist / radius) * 195;
+      const power = (1 - dist / radius) * 240;
       p.body.wakeUp();
-      if (causedByPlayer) markByPlayer(p.body, 3.0);
-      p.body.applyImpulse(new CANNON.Vec3(dir.x * power, power * 0.85 + 50, dir.z * power));
-      if (p.kind === 'barrel' && !p.exploded && dist < 5.5) {
-        setTimeout(() => explodeBarrel(p), 120 + Math.random() * 140);
+      if (causedByPlayer) markByPlayer(p.body, 3.5);
+      p.body.applyImpulse(new CANNON.Vec3(dir.x * power, power * 1.05 + 70, dir.z * power));
+      if (p.explosive && !p.exploded && dist < 6.8) {
+        setTimeout(() => explodeBarrel(p), 110 + Math.random() * 140);
       }
     }
   }
   for (const brk of breakables) {
     if (!brk.broken && brk.pos.distanceTo(pos) < radius) {
-      shatterBreakable(brk, brk.pos.clone().sub(pos), 15, causedByPlayer);
+      shatterBreakable(brk, brk.pos.clone().sub(pos), 16, causedByPlayer);
     }
   }
   for (const npc of npcs) {
@@ -3582,19 +4245,19 @@ function explodeBarrel(barrelProp) {
     if (dist < radius) {
       const dir = npc.body.position.vsub(pos);
       dir.normalize();
-      if (causedByPlayer) markByPlayer(npc.body, 3.0);
-      knockNpc(npc, dir, 22, null, causedByPlayer);
+      if (causedByPlayer) markByPlayer(npc.body, 3.5);
+      knockNpc(npc, dir, 24, null, causedByPlayer);
     }
   }
   for (const v of vehicles) {
     const dist = v.body.position.distanceTo(pos);
-    if (dist < 11.5 && dist > 0.05) {
+    if (dist < 12.5 && dist > 0.05) {
       const dir = v.body.position.vsub(pos);
       dir.normalize();
-      const power = (1 - dist / 11.5) * 680;
+      const power = (1 - dist / 12.5) * 740;
       v.body.wakeUp();
       if (causedByPlayer) markByPlayer(v.body, 4.0);
-      v.body.applyImpulse(new CANNON.Vec3(dir.x * power, power * 0.65 + 160, dir.z * power));
+      v.body.applyImpulse(new CANNON.Vec3(dir.x * power, power * 0.72 + 190, dir.z * power));
       v.body.angularVelocity.set((Math.random() - 0.5) * 5, (Math.random() - 0.5) * 5, (Math.random() - 0.5) * 5);
       if (causedByPlayer && v.hitCooldown <= 0) {
         v.hitCooldown = 1.0;
@@ -3604,13 +4267,18 @@ function explodeBarrel(barrelProp) {
   }
   if (!inTractor) {
     const distP = playerBody.position.distanceTo(pos);
-    if (distP < 6.5) {
+    if (distP < 9.5) {
       const dir = playerBody.position.vsub(pos);
+      if (dir.lengthSquared() < 0.01) dir.set(0.3, 1, 0.3);
       dir.normalize();
-      const k = (1 - distP / 6.5) * 16;
+      const falloff = 1 - distP / 9.5;
+      const k = falloff * 18 + 4;
       playerBody.velocity.x += dir.x * k;
-      playerBody.velocity.y += Math.max(9, k * 0.9);
+      playerBody.velocity.y = Math.max(playerBody.velocity.y, 17.5 + falloff * 11.5);
       playerBody.velocity.z += dir.z * k;
+      if (causedByPlayer) {
+        addTrick('Взрывной полёт!', 300, playerBody.position, '#ffbe3b');
+      }
     }
   }
 }
@@ -3984,7 +4652,7 @@ function buildTractor(startX, startZ) {
 
   const driverSeat = new THREE.Group();
   driverSeat.position.set(0, 0.45, -0.72);
-  const driverPig = createPigModel(PIG_TYPES.MEME, { scale: 0.48 });
+  const driverPig = createPigModel(PIG_TYPES.MEME, { scale: 0.66 });
   driverPig.userData.disposeShadow();
   driverPig.visible = false;
   driverSeat.add(driverPig);
@@ -4049,7 +4717,7 @@ function buildTractor(startX, startZ) {
     } else if (other.userData && other.userData.propObj && speed >= 3.0) {
       const p = other.userData.propObj;
       if (causedByPlayer) markByPlayer(other, 3.0);
-      if (p.kind === 'barrel' && speed > 5.5) {
+      if (p.explosive && speed > 5.0) {
         explodeBarrel(p);
       } else if (p.hitCooldown <= 0) {
         p.hitCooldown = 0.55;
@@ -4096,13 +4764,13 @@ const BREED_ORDER = [
   PIG_TYPES.BLACK,
 ];
 let currentBreedIdx = 0;
-const PLAYER_SCALE = 0.45; // Уменьшение в ~2.2 раза: хряк по плечо легковушке / до середины кабины грузовика
+const PLAYER_SCALE = 0.45 * 1.45; // Увеличение в 1.45x (~0.6525): крупнее лавочек, по верхний край двери контейнера
 const PLAYER_SPHERE_R = 0.58 * PLAYER_SCALE;
 const PLAYER_VISUAL_Y_OFFSET = -PLAYER_SPHERE_R;
-const CAM_DIST_NORMAL = 3.4;
-const CAM_DIST_RAGDOLL = 4.2;
-const CAM_HEIGHT_OFFSET = 0.72;
-const CAM_LOOK_Y_OFFSET = 0.36;
+const CAM_DIST_NORMAL = 3.4 * 1.45;
+const CAM_DIST_RAGDOLL = 4.2 * 1.45;
+const CAM_HEIGHT_OFFSET = 0.72 * 1.45;
+const CAM_LOOK_Y_OFFSET = 0.36 * 1.45;
 
 let playerPig = createPigModel(BREED_ORDER[0], { scale: PLAYER_SCALE });
 scene.add(playerPig);
@@ -4147,7 +4815,7 @@ playerBody.addEventListener('collide', (e) => {
     if (other.userData && other.userData.propObj) {
       const p = other.userData.propObj;
       markByPlayer(other, 3.0);
-      if (p.kind === 'barrel' && !p.exploded) explodeBarrel(p);
+      if (p.explosive && !p.exploded) explodeBarrel(p);
       else if (p.hitCooldown <= 0) {
         p.hitCooldown = 0.5;
         const dir = other.position.vsub(playerBody.position); dir.normalize();
@@ -4279,10 +4947,10 @@ function updateStickySnout() {
 
   const aim = getAimDirection();
   const fwd = new THREE.Vector3(aim.x, Math.max(-0.2, Math.min(0.45, aim.y)), aim.z).normalize();
-  const holdDist = grabbedObj.kind === 'vehicle' ? 2.55 : 1.42;
+  const holdDist = grabbedObj.kind === 'vehicle' ? 2.95 : (1.42 * 1.45);
   const target = new THREE.Vector3(
     playerBody.position.x + fwd.x * holdDist,
-    Math.max(0.55, playerBody.position.y + 0.24 + fwd.y * 0.85),
+    Math.max(0.72, playerBody.position.y + (0.24 + fwd.y * 0.85) * 1.45),
     playerBody.position.z + fwd.z * holdDist
   );
 
@@ -4554,14 +5222,15 @@ function doHeadbutt() {
     if (dist < 4.5 && (toObj.normalize().dot(fwd) > 0.22 || dist < 1.9)) {
       hitCount++;
       markByPlayer(p.body, 3.0);
-      if (p.kind === 'barrel' && !p.exploded) {
+      if (p.explosive && !p.exploded) {
         explodeBarrel(p);
       } else {
         p.body.wakeUp();
-        p.body.applyImpulse(new CANNON.Vec3(fwd.x * 185, 105, fwd.z * 185));
+        p.body.applyImpulse(new CANNON.Vec3(fwd.x * 195, 115, fwd.z * 195));
+        p.body.angularVelocity.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10);
         sfx.crate();
-        spawnBurst(p.body.position, 0xd49b50, 6, 6, 1.0, true);
-        addTrick('Свинский погром', 150, p.body.position);
+        spawnBurst(p.body.position, p.burstColor || 0xd49b50, 6, 6, 1.0, true);
+        addTrick(`Боднул: ${p.name}!`, p.points || 150, p.body.position);
       }
     }
   }
@@ -4859,6 +5528,7 @@ function lerpAngle(currentYaw, targetAngle, t) {
 // ----------------------------------------------------------------------------
 preloadHryakModel();
 buildWorld();
+spawnStaticWorldModels();
 clearAndSpawnProps();
 clearAndSpawnVehicles();
 clearAndSpawnBreakables();
@@ -5209,7 +5879,7 @@ function updatePlayer(dt, input) {
     playerPig.quaternion.copy(playerBody.quaternion);
     playerPig.userData.update(dt, 'ragdoll');
   } else {
-    const moveSpeed = grounded ? 13.5 : 16.5;
+    const moveSpeed = (grounded ? 13.5 : 16.5) * 0.7; // Скорость движения уменьшена на 30%
     const accel = grounded ? 18 : (moving ? 14.0 : 1.0);
     if (!onSlideNow) {
       if (grounded || moving) {
@@ -5454,7 +6124,7 @@ function updateCamera(dt) {
 
   const p = playerBody.position;
   if (firstPerson) {
-    camera.position.set(p.x, p.y + 0.32, p.z);
+    camera.position.set(p.x, p.y + 0.32 * 1.45, p.z);
     camera.rotation.order = 'YXZ';
     camera.rotation.y = camYaw;
     camera.rotation.x = -camPitch;
